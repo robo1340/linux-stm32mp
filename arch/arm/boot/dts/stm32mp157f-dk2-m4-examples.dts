@@ -78,7 +78,7 @@
 			status = "okay";
 		};
 
-		m4_led: m4-led {
+		m4_led: m4_led {
 			compatible = "rproc-srm-dev";
 			pinctrl-names = "default";
 			pinctrl-0 = <&m4_leds_orange_pins>;
