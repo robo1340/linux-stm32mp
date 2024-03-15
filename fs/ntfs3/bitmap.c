@@ -51,6 +51,11 @@ void ntfs3_exit_bitmap(void)
 	kmem_cache_destroy(ntfs_enode_cachep);
 }
 
+static inline u32 wnd_bits(const struct wnd_bitmap *wnd, size_t i)
+{
+	return i + 1 == wnd->nwnd ? wnd->bits_last : wnd->sb->s_blocksize * 8;
+}
+
 /*
  * wnd_scan
  *
@@ -560,7 +565,7 @@ static int wnd_rescan(struct wnd_bitmap *wnd)
 
 		buf = (ulong *)bh->b_data;
 
-		used = bitmap_weight(buf, wbits);
+		used = __bitmap_weight(buf, wbits);
 		if (used < wbits) {
 			frb = wbits - used;
 			wnd->free_bits[iw] = frb;
@@ -661,7 +666,7 @@ int wnd_init(struct wnd_bitmap *wnd, struct super_block *sb, size_t nbits)
 	if (!wnd->bits_last)
 		wnd->bits_last = wbits;
 
-	wnd->free_bits = kcalloc(wnd->nwnd, sizeof(u16), GFP_NOFS | __GFP_NOWARN);
+	wnd->free_bits = kcalloc(wnd->nwnd, sizeof(u16), GFP_NOFS);
 	if (!wnd->free_bits)
 		return -ENOMEM;
 
@@ -1328,7 +1333,9 @@ int wnd_extend(struct wnd_bitmap *wnd, size_t new_bits)
 		if (!new_free)
 			return -ENOMEM;
 
-		memcpy(new_free, wnd->free_bits, wnd->nwnd * sizeof(short));
+		if (new_free != wnd->free_bits)
+			memcpy(new_free, wnd->free_bits,
+			       wnd->nwnd * sizeof(short));
 		memset(new_free + wnd->nwnd, 0,
 		       (new_wnd - wnd->nwnd) * sizeof(short));
 		kfree(wnd->free_bits);
@@ -1364,7 +1371,7 @@ int wnd_extend(struct wnd_bitmap *wnd, size_t new_bits)
 		buf = (ulong *)bh->b_data;
 
 		__bitmap_clear(buf, b0, blocksize * 8 - b0);
-		frb = wbits - bitmap_weight(buf, wbits);
+		frb = wbits - __bitmap_weight(buf, wbits);
 		wnd->total_zeroes += frb - wnd->free_bits[iw];
 		wnd->free_bits[iw] = frb;
 
@@ -1388,8 +1395,9 @@ int wnd_extend(struct wnd_bitmap *wnd, size_t new_bits)
 
 void wnd_zone_set(struct wnd_bitmap *wnd, size_t lcn, size_t len)
 {
-	size_t zlen = wnd->zone_end - wnd->zone_bit;
+	size_t zlen;
 
+	zlen = wnd->zone_end - wnd->zone_bit;
 	if (zlen)
 		wnd_add_free_ext(wnd, wnd->zone_bit, zlen, false);
 
@@ -1424,7 +1432,7 @@ int ntfs_trim_fs(struct ntfs_sb_info *sbi, struct fstrim_range *range)
 
 	down_read_nested(&wnd->rw_lock, BITMAP_MUTEX_CLUSTERS);
 
-	for (; iw < wnd->nwnd; iw++, wbit = 0) {
+	for (; iw < wnd->nbits; iw++, wbit = 0) {
 		CLST lcn_wnd = iw * wbits;
 		struct buffer_head *bh;
 

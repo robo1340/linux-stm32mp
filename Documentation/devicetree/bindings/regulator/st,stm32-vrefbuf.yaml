@@ -12,14 +12,16 @@ description: |
   components through the dedicated VREF+ pin.
 
 maintainers:
-  - Fabrice Gasnier <fabrice.gasnier@foss.st.com>
+  - Fabrice Gasnier <fabrice.gasnier@st.com>
 
 allOf:
   - $ref: "regulator.yaml#"
 
 properties:
   compatible:
-    const: st,stm32-vrefbuf
+    enum:
+      - st,stm32-vrefbuf
+      - st,stm32mp13-vrefbuf
 
   reg:
     maxItems: 1
@@ -51,3 +53,4 @@ examples:
     };
 
 ...
+

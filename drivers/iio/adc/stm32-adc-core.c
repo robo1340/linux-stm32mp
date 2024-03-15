@@ -23,7 +23,6 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
-#include <linux/units.h>
 
 #include "stm32-adc-core.h"
 
@@ -312,8 +311,8 @@ out:
 static const struct stm32_adc_common_regs stm32f4_adc_common_regs = {
 	.csr = STM32F4_ADC_CSR,
 	.ccr = STM32F4_ADC_CCR,
-	.eoc_msk = { STM32F4_EOC1, STM32F4_EOC2, STM32F4_EOC3 },
-	.ovr_msk = { STM32F4_OVR1, STM32F4_OVR2, STM32F4_OVR3 },
+	.eoc_msk = { STM32F4_EOC1, STM32F4_EOC2, STM32F4_EOC3},
+	.ovr_msk = { STM32F4_OVR1, STM32F4_OVR2, STM32F4_OVR3},
 	.ier = STM32F4_ADC_CR1,
 	.eocie_msk = STM32F4_EOCIE,
 };
@@ -322,8 +321,8 @@ static const struct stm32_adc_common_regs stm32f4_adc_common_regs = {
 static const struct stm32_adc_common_regs stm32h7_adc_common_regs = {
 	.csr = STM32H7_ADC_CSR,
 	.ccr = STM32H7_ADC_CCR,
-	.eoc_msk = { STM32H7_EOC_MST, STM32H7_EOC_SLV },
-	.ovr_msk = { STM32H7_OVR_MST, STM32H7_OVR_SLV },
+	.eoc_msk = { STM32H7_EOC_MST, STM32H7_EOC_SLV},
+	.ovr_msk = { STM32H7_OVR_MST, STM32H7_OVR_SLV},
 	.ier = STM32H7_ADC_IER,
 	.eocie_msk = STM32H7_EOCIE,
 };
@@ -332,8 +331,8 @@ static const struct stm32_adc_common_regs stm32h7_adc_common_regs = {
 static const struct stm32_adc_common_regs stm32mp13_adc_common_regs = {
 	.csr = STM32H7_ADC_CSR,
 	.ccr = STM32H7_ADC_CCR,
-	.eoc_msk = { STM32H7_EOC_MST },
-	.ovr_msk = { STM32H7_OVR_MST },
+	.eoc_msk = { STM32H7_EOC_MST},
+	.ovr_msk = { STM32H7_OVR_MST},
 	.ier = STM32H7_ADC_IER,
 	.eocie_msk = STM32H7_EOCIE,
 };
@@ -752,8 +751,8 @@ static int stm32_adc_core_switches_probe(struct device *dev,
 	return 0;
 }
 
-static int stm32_adc_probe_identification(struct platform_device *pdev,
-					  struct stm32_adc_priv *priv)
+static int stm32_adc_sanity_check(struct platform_device *pdev,
+				  struct stm32_adc_priv *priv)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct device_node *child;
@@ -764,8 +763,8 @@ static int stm32_adc_probe_identification(struct platform_device *pdev,
 	if (!priv->cfg->ipid)
 		return 0;
 
-	id = FIELD_GET(STM32MP1_IPIDR_MASK,
-		       readl_relaxed(priv->common.base + STM32MP1_ADC_IPDR));
+	id = FIELD_GET(STM32MP13_IPIDR_MASK,
+		       readl_relaxed(priv->common.base + STM32MP13_ADC_IPDR));
 	if (id != priv->cfg->ipid) {
 		dev_err(&pdev->dev, "Unexpected IP version: 0x%x", id);
 		return -EINVAL;
@@ -780,17 +779,17 @@ static int stm32_adc_probe_identification(struct platform_device *pdev,
 			count++;
 	}
 
-	val = readl_relaxed(priv->common.base + STM32MP1_ADC_HWCFGR0);
-	priv->nb_adc_max = FIELD_GET(STM32MP1_ADCNUM_MASK, val);
+	val = readl_relaxed(priv->common.base + STM32MP13_ADC_HWCFGR0);
+	priv->nb_adc_max = FIELD_GET(STM32MP13_ADCNUM_MASK, val);
 	if (count > priv->nb_adc_max) {
 		dev_err(&pdev->dev, "Unexpected child number: %d", count);
 		return -EINVAL;
 	}
 
-	val = readl_relaxed(priv->common.base + STM32MP1_ADC_VERR);
+	val = readl_relaxed(priv->common.base + STM32MP13_ADC_VERR);
 	dev_dbg(&pdev->dev, "ADC version: %lu.%lu\n",
-		FIELD_GET(STM32MP1_MAJREV_MASK, val),
-		FIELD_GET(STM32MP1_MINREV_MASK, val));
+		FIELD_GET(STM32MP13_MAJREV_MASK, val),
+		FIELD_GET(STM32MP13_MINREV_MASK, val));
 
 	return 0;
 }
@@ -858,7 +857,7 @@ static int stm32_adc_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_pm_stop;
 
-	ret = stm32_adc_probe_identification(pdev, priv);
+	ret = stm32_adc_sanity_check(pdev, priv);
 	if (ret < 0)
 		goto err_hw_stop;
 
@@ -924,6 +923,7 @@ static int stm32_adc_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#if defined(CONFIG_PM)
 static int stm32_adc_core_runtime_suspend(struct device *dev)
 {
 	stm32_adc_core_hw_stop(dev);
@@ -942,11 +942,15 @@ static int stm32_adc_core_runtime_idle(struct device *dev)
 
 	return 0;
 }
+#endif
 
-static DEFINE_RUNTIME_DEV_PM_OPS(stm32_adc_core_pm_ops,
-				stm32_adc_core_runtime_suspend,
-				stm32_adc_core_runtime_resume,
-				stm32_adc_core_runtime_idle);
+static const struct dev_pm_ops stm32_adc_core_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(stm32_adc_core_runtime_suspend,
+			   stm32_adc_core_runtime_resume,
+			   stm32_adc_core_runtime_idle)
+};
 
 static const struct stm32_adc_priv_cfg stm32f4_adc_priv_cfg = {
 	.regs = &stm32f4_adc_common_regs,
@@ -977,7 +981,7 @@ static const struct stm32_adc_priv_cfg stm32mp1_adc_priv_cfg = {
 static const struct stm32_adc_priv_cfg stm32mp13_adc_priv_cfg = {
 	.regs = &stm32mp13_adc_common_regs,
 	.clk_sel = stm32h7_adc_clk_sel,
-	.max_clk_rate_hz = 75 * HZ_PER_MHZ,
+	.max_clk_rate_hz = 75000000,
 	.ipid = STM32MP13_IPIDR_NUMBER,
 	.num_irqs = 1,
 };
@@ -1006,7 +1010,7 @@ static struct platform_driver stm32_adc_driver = {
 	.driver = {
 		.name = "stm32-adc-core",
 		.of_match_table = stm32_adc_of_match,
-		.pm = pm_ptr(&stm32_adc_core_pm_ops),
+		.pm = &stm32_adc_core_pm_ops,
 	},
 };
 module_platform_driver(stm32_adc_driver);

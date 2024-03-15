@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+// SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 /*
- * UCSI driver for STMicroelectronics STM32G0 Type-C PD controller
+ * UCSI driver for STMicroelectronics STM32G0 Type-C controller
  *
- * Copyright (C) 2022, STMicroelectronics - All Rights Reserved
+ * Copyright (C) 2021, STMicroelectronics - All Rights Reserved
  * Author: Fabrice Gasnier <fabrice.gasnier@foss.st.com>.
  */
 
@@ -267,7 +267,7 @@ static int ucsi_stm32g0_bl_write(struct ucsi *ucsi, u32 addr, const void *data, 
 		return -EINVAL;
 
 	/* Write memory: len bytes -1, data up to 256 bytes + XOR'ed bytes */
-	data8 = kmalloc(STM32G0_I2C_BL_SZ + 2, GFP_KERNEL);
+	data8 = kzalloc(STM32G0_I2C_BL_SZ + 2, GFP_KERNEL);
 	if (!data8)
 		return -ENOMEM;
 
@@ -371,7 +371,7 @@ static int ucsi_stm32g0_async_write(struct ucsi *ucsi, unsigned int offset, cons
 	unsigned char *buf;
 	int ret;
 
-	buf = kmalloc(len + 1, GFP_KERNEL);
+	buf = kzalloc(len + 1, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
@@ -383,7 +383,7 @@ static int ucsi_stm32g0_async_write(struct ucsi *ucsi, unsigned int offset, cons
 	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
 	kfree(buf);
 	if (ret != ARRAY_SIZE(msg)) {
-		dev_err(g0->dev, "i2c write %02x, %02x error: %d\n", client->addr, offset, ret);
+		dev_err(g0->dev, "i2c write %02x, %02x error: %d\n", client->addr, buf[0], ret);
 
 		return ret < 0 ? ret : -EIO;
 	}
@@ -587,37 +587,18 @@ static int ucsi_stm32g0_probe_bootloader(struct ucsi *ucsi)
 	int ret;
 	u16 ucsi_version;
 
-	/* firmware-name is optional */
-	if (device_property_present(g0->dev, "firmware-name")) {
-		ret = device_property_read_string(g0->dev, "firmware-name", &g0->fw_name);
-		if (ret < 0)
-			return dev_err_probe(g0->dev, ret, "Error reading firmware-name\n");
-	}
-
-	if (g0->fw_name) {
-		/* STM32G0 in bootloader mode communicates at reserved address 0x51 */
-		g0->i2c_bl = i2c_new_dummy_device(g0->client->adapter, STM32G0_I2C_BL_ADDR);
-		if (IS_ERR(g0->i2c_bl)) {
-			ret = dev_err_probe(g0->dev, PTR_ERR(g0->i2c_bl),
-					    "Failed to register bootloader I2C address\n");
-			return ret;
-		}
-	}
-
 	/*
-	 * Try to guess if the STM32G0 is running a UCSI firmware. First probe the UCSI FW at its
-	 * i2c address. Fallback to bootloader i2c address only if firmware-name is specified.
+	 * Try to guess if the STM32G0 is running a UCSI firmware. Probe first the UCSI FW at its
+	 * specified i2c address.
 	 */
 	ret = ucsi_stm32g0_read(ucsi, UCSI_VERSION, &ucsi_version, sizeof(ucsi_version));
-	if (!ret || !g0->fw_name)
-		return ret;
+	if (!ret)
+		return 0;
 
 	/* Speculatively read the bootloader version that has a known length. */
 	ret = ucsi_stm32g0_bl_get_version(ucsi, &g0->bl_version);
-	if (ret < 0) {
-		i2c_unregister_device(g0->i2c_bl);
+	if (ret < 0)
 		return ret;
-	}
 
 	/* Device in bootloader mode */
 	g0->in_bootloader = true;
@@ -647,9 +628,16 @@ static int ucsi_stm32g0_probe(struct i2c_client *client, const struct i2c_device
 
 	ucsi_set_drvdata(g0->ucsi, g0);
 
+	/* STM32G0 in bootloader mode communicates at reserved address 0x51 */
+	g0->i2c_bl = i2c_new_dummy_device(client->adapter, STM32G0_I2C_BL_ADDR);
+	if (IS_ERR(g0->i2c_bl)) {
+		ret = dev_err_probe(dev, PTR_ERR(g0->i2c_bl), "Failed to register booloader I2C\n");
+		goto destroy;
+	}
+
 	ret = ucsi_stm32g0_probe_bootloader(g0->ucsi);
 	if (ret < 0)
-		goto destroy;
+		goto freei2c;
 
 	/*
 	 * Don't register in bootloader mode: wait for the firmware to be loaded and started before
@@ -661,7 +649,14 @@ static int ucsi_stm32g0_probe(struct i2c_client *client, const struct i2c_device
 			goto freei2c;
 	}
 
-	if (g0->fw_name) {
+	ret = of_property_read_string(dev->of_node, "firmware-name", &g0->fw_name);
+	if (ret) {
+		/* firmware-name is optional, but report an error when found in bootloader mode */
+		if (g0->in_bootloader) {
+			dev_err_probe(dev, ret, "firmware-name not specified\n");
+			goto freei2c;
+		}
+	} else {
 		/*
 		 * Asynchronously flash (e.g. bootloader mode) or update the running firmware,
 		 * not to hang the boot process
@@ -680,26 +675,26 @@ unregister:
 	if (!g0->in_bootloader)
 		ucsi_stm32g0_unregister(g0->ucsi);
 freei2c:
-	if (g0->fw_name)
-		i2c_unregister_device(g0->i2c_bl);
+	i2c_unregister_device(g0->i2c_bl);
 destroy:
 	ucsi_destroy(g0->ucsi);
 
 	return ret;
 }
 
-static void ucsi_stm32g0_remove(struct i2c_client *client)
+static int ucsi_stm32g0_remove(struct i2c_client *client)
 {
 	struct ucsi_stm32g0 *g0 = i2c_get_clientdata(client);
 
 	if (!g0->in_bootloader)
 		ucsi_stm32g0_unregister(g0->ucsi);
-	if (g0->fw_name)
-		i2c_unregister_device(g0->i2c_bl);
+	i2c_unregister_device(g0->i2c_bl);
 	ucsi_destroy(g0->ucsi);
+
+	return 0;
 }
 
-static int ucsi_stm32g0_suspend(struct device *dev)
+static int __maybe_unused ucsi_stm32g0_suspend(struct device *dev)
 {
 	struct ucsi_stm32g0 *g0 = dev_get_drvdata(dev);
 	struct i2c_client *client = g0->client;
@@ -719,7 +714,7 @@ static int ucsi_stm32g0_suspend(struct device *dev)
 	return 0;
 }
 
-static int ucsi_stm32g0_resume(struct device *dev)
+static int __maybe_unused ucsi_stm32g0_resume(struct device *dev)
 {
 	struct ucsi_stm32g0 *g0 = dev_get_drvdata(dev);
 	struct i2c_client *client = g0->client;
@@ -743,7 +738,7 @@ static int ucsi_stm32g0_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(ucsi_stm32g0_pm_ops, ucsi_stm32g0_suspend, ucsi_stm32g0_resume);
+static SIMPLE_DEV_PM_OPS(ucsi_stm32g0_pm_ops, ucsi_stm32g0_suspend, ucsi_stm32g0_resume);
 
 static const struct of_device_id __maybe_unused ucsi_stm32g0_typec_of_match[] = {
 	{ .compatible = "st,stm32g0-typec" },
@@ -761,7 +756,7 @@ static struct i2c_driver ucsi_stm32g0_i2c_driver = {
 	.driver = {
 		.name = "ucsi-stm32g0-i2c",
 		.of_match_table = of_match_ptr(ucsi_stm32g0_typec_of_match),
-		.pm = pm_sleep_ptr(&ucsi_stm32g0_pm_ops),
+		.pm = &ucsi_stm32g0_pm_ops,
 	},
 	.probe = ucsi_stm32g0_probe,
 	.remove = ucsi_stm32g0_remove,

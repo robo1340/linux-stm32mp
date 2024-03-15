@@ -17,8 +17,6 @@
 /* Handle ro_after_init data on our own. */
 #define RO_AFTER_INIT_DATA
 
-#define RUNTIME_DISCARD_EXIT
-
 #define EMITS_PT_NOTE
 
 #include <asm-generic/vmlinux.lds.h>
@@ -51,6 +49,7 @@ SECTIONS
 		SOFTIRQENTRY_TEXT
 		FTRACE_HOTPATCH_TRAMPOLINES_TEXT
 		*(.text.*_indirect_*)
+		*(.fixup)
 		*(.gnu.warning)
 		. = ALIGN(PAGE_SIZE);
 		_etext = .;		/* End of text section */
@@ -81,7 +80,6 @@ SECTIONS
 		_end_amode31_refs = .;
 	}
 
-	. = ALIGN(PAGE_SIZE);
 	_edata = .;		/* End of data section */
 
 	/* will be freed after init */
@@ -196,7 +194,6 @@ SECTIONS
 
 	BSS_SECTION(PAGE_SIZE, 4 * PAGE_SIZE, PAGE_SIZE)
 
-	. = ALIGN(PAGE_SIZE);
 	_end = . ;
 
 	/*
@@ -228,6 +225,5 @@ SECTIONS
 	DISCARDS
 	/DISCARD/ : {
 		*(.eh_frame)
-		*(.interp)
 	}
 }

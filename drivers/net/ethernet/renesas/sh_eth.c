@@ -1153,19 +1153,17 @@ static void update_mac_address(struct net_device *ndev)
 static void read_mac_address(struct net_device *ndev, unsigned char *mac)
 {
 	if (mac[0] || mac[1] || mac[2] || mac[3] || mac[4] || mac[5]) {
-		eth_hw_addr_set(ndev, mac);
+		memcpy(ndev->dev_addr, mac, ETH_ALEN);
 	} else {
 		u32 mahr = sh_eth_read(ndev, MAHR);
 		u32 malr = sh_eth_read(ndev, MALR);
-		u8 addr[ETH_ALEN];
 
-		addr[0] = (mahr >> 24) & 0xFF;
-		addr[1] = (mahr >> 16) & 0xFF;
-		addr[2] = (mahr >>  8) & 0xFF;
-		addr[3] = (mahr >>  0) & 0xFF;
-		addr[4] = (malr >>  8) & 0xFF;
-		addr[5] = (malr >>  0) & 0xFF;
-		eth_hw_addr_set(ndev, addr);
+		ndev->dev_addr[0] = (mahr >> 24) & 0xFF;
+		ndev->dev_addr[1] = (mahr >> 16) & 0xFF;
+		ndev->dev_addr[2] = (mahr >>  8) & 0xFF;
+		ndev->dev_addr[3] = (mahr >>  0) & 0xFF;
+		ndev->dev_addr[4] = (malr >>  8) & 0xFF;
+		ndev->dev_addr[5] = (malr >>  0) & 0xFF;
 	}
 }
 
@@ -2026,8 +2024,14 @@ static int sh_eth_phy_init(struct net_device *ndev)
 	}
 
 	/* mask with MAC supported features */
-	if (mdp->cd->register_type != SH_ETH_REG_GIGABIT)
-		phy_set_max_speed(phydev, SPEED_100);
+	if (mdp->cd->register_type != SH_ETH_REG_GIGABIT) {
+		int err = phy_set_max_speed(phydev, SPEED_100);
+		if (err) {
+			netdev_err(ndev, "failed to limit PHY to 100 Mbit/s\n");
+			phy_disconnect(phydev);
+			return err;
+		}
+	}
 
 	phy_attached_info(phydev);
 
@@ -2290,9 +2294,7 @@ static void sh_eth_get_strings(struct net_device *ndev, u32 stringset, u8 *data)
 }
 
 static void sh_eth_get_ringparam(struct net_device *ndev,
-				 struct ethtool_ringparam *ring,
-				 struct kernel_ethtool_ringparam *kernel_ring,
-				 struct netlink_ext_ack *extack)
+				 struct ethtool_ringparam *ring)
 {
 	struct sh_eth_private *mdp = netdev_priv(ndev);
 
@@ -2303,9 +2305,7 @@ static void sh_eth_get_ringparam(struct net_device *ndev,
 }
 
 static int sh_eth_set_ringparam(struct net_device *ndev,
-				struct ethtool_ringparam *ring,
-				struct kernel_ethtool_ringparam *kernel_ring,
-				struct netlink_ext_ack *extack)
+				struct ethtool_ringparam *ring)
 {
 	struct sh_eth_private *mdp = netdev_priv(ndev);
 	int ret;
@@ -3072,8 +3072,6 @@ static int sh_mdio_init(struct sh_eth_private *mdp,
 	struct bb_info *bitbang;
 	struct platform_device *pdev = mdp->pdev;
 	struct device *dev = &mdp->pdev->dev;
-	struct phy_device *phydev;
-	struct device_node *pn;
 
 	/* create bit control struct for PHY */
 	bitbang = devm_kzalloc(dev, sizeof(struct bb_info), GFP_KERNEL);
@@ -3107,14 +3105,6 @@ static int sh_mdio_init(struct sh_eth_private *mdp,
 	ret = of_mdiobus_register(mdp->mii_bus, dev->of_node);
 	if (ret)
 		goto out_free_bus;
-
-	pn = of_parse_phandle(dev->of_node, "phy-handle", 0);
-	phydev = of_phy_find_device(pn);
-	if (phydev) {
-		phydev->mac_managed_pm = true;
-		put_device(&phydev->mdio.dev);
-	}
-	of_node_put(pn);
 
 	return 0;
 
@@ -3372,11 +3362,12 @@ static int sh_eth_drv_probe(struct platform_device *pdev)
 	/* MDIO bus init */
 	ret = sh_mdio_init(mdp, pd);
 	if (ret) {
-		dev_err_probe(&pdev->dev, ret, "MDIO init failed\n");
+		if (ret != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "MDIO init failed: %d\n", ret);
 		goto out_release;
 	}
 
-	netif_napi_add(ndev, &mdp->napi, sh_eth_poll);
+	netif_napi_add(ndev, &mdp->napi, sh_eth_poll, 64);
 
 	/* network device register */
 	ret = register_netdev(ndev);
@@ -3454,7 +3445,9 @@ static int sh_eth_wol_restore(struct net_device *ndev)
 	 * both be reset and all registers restored. This is what
 	 * happens during suspend and resume without WoL enabled.
 	 */
-	sh_eth_close(ndev);
+	ret = sh_eth_close(ndev);
+	if (ret < 0)
+		return ret;
 	ret = sh_eth_open(ndev);
 	if (ret < 0)
 		return ret;
@@ -3466,7 +3459,7 @@ static int sh_eth_suspend(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct sh_eth_private *mdp = netdev_priv(ndev);
-	int ret;
+	int ret = 0;
 
 	if (!netif_running(ndev))
 		return 0;
@@ -3485,7 +3478,7 @@ static int sh_eth_resume(struct device *dev)
 {
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct sh_eth_private *mdp = netdev_priv(ndev);
-	int ret;
+	int ret = 0;
 
 	if (!netif_running(ndev))
 		return 0;

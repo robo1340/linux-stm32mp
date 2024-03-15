@@ -3,7 +3,6 @@
 #define _ASM_X86_IRQ_STACK_H
 
 #include <linux/ptrace.h>
-#include <linux/objtool.h>
 
 #include <asm/processor.h>
 
@@ -59,7 +58,7 @@
  *     the output constraints to make the compiler aware that R11 cannot be
  *     reused after the asm() statement.
  *
- *     For builds with CONFIG_UNWINDER_FRAME_POINTER, ASM_CALL_CONSTRAINT is
+ *     For builds with CONFIG_UNWIND_FRAME_POINTER ASM_CALL_CONSTRAINT is
  *     required as well as this prevents certain creative GCC variants from
  *     misplacing the ASM code.
  *
@@ -203,7 +202,6 @@
 			      IRQ_CONSTRAINTS, regs, vector);		\
 }
 
-#ifdef CONFIG_SOFTIRQ_ON_OWN_STACK
 /*
  * Macro to invoke __do_softirq on the irq stack. This is only called from
  * task context when bottom halves are about to be reenabled and soft
@@ -216,8 +214,6 @@
 	call_on_irqstack(__do_softirq, ASM_CALL_ARG0);			\
 	__this_cpu_write(hardirq_stack_inuse, false);			\
 }
-
-#endif
 
 #else /* CONFIG_X86_64 */
 /* System vector handlers always run on the stack they interrupted. */

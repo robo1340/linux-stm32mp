@@ -862,8 +862,8 @@ static int stm32_fmc2_nfc_xfer(struct nand_chip *chip, const u8 *buf,
 
 	ret = dma_map_sg(nfc->dev, nfc->dma_data_sg.sgl,
 			 eccsteps, dma_data_dir);
-	if (!ret)
-		return -EIO;
+	if (ret < 0)
+		return ret;
 
 	desc_data = dmaengine_prep_slave_sg(dma_ch, nfc->dma_data_sg.sgl,
 					    eccsteps, dma_transfer_dir,
@@ -893,10 +893,8 @@ static int stm32_fmc2_nfc_xfer(struct nand_chip *chip, const u8 *buf,
 
 		ret = dma_map_sg(nfc->dev, nfc->dma_ecc_sg.sgl,
 				 eccsteps, dma_data_dir);
-		if (!ret) {
-			ret = -EIO;
+		if (ret < 0)
 			goto err_unmap_data;
-		}
 
 		desc_ecc = dmaengine_prep_slave_sg(nfc->dma_ecc_ch,
 						   nfc->dma_ecc_sg.sgl,
@@ -1531,9 +1529,6 @@ static int stm32_fmc2_nfc_setup_interface(struct nand_chip *chip, int chipnr,
 	if (IS_ERR(sdrt))
 		return PTR_ERR(sdrt);
 
-	if (conf->timings.mode > 3)
-		return -EOPNOTSUPP;
-
 	if (chipnr == NAND_DATA_IFACE_CHECK_ONLY)
 		return 0;
 
@@ -1804,8 +1799,9 @@ static int stm32_fmc2_nfc_parse_child(struct stm32_fmc2_nfc *nfc,
 		nand->cs_used[i] = cs;
 	}
 
-	nand->wp_gpio = devm_fwnode_gpiod_get(nfc->dev, of_fwnode_handle(dn),
-					      "wp", GPIOD_OUT_HIGH, "wp");
+	nand->wp_gpio = devm_gpiod_get_from_of_node(nfc->dev, dn,
+						    "wp-gpios", 0,
+						    GPIOD_OUT_HIGH, "wp");
 	if (IS_ERR(nand->wp_gpio)) {
 		ret = PTR_ERR(nand->wp_gpio);
 		if (ret != -ENOENT)
@@ -1929,11 +1925,15 @@ static int stm32_fmc2_nfc_probe(struct platform_device *pdev)
 
 		nfc->data_phys_addr[chip_cs] = res->start;
 
-		nfc->cmd_base[chip_cs] = devm_platform_ioremap_resource(pdev, mem_region + 1);
+		res = platform_get_resource(pdev, IORESOURCE_MEM,
+					    mem_region + 1);
+		nfc->cmd_base[chip_cs] = devm_ioremap_resource(dev, res);
 		if (IS_ERR(nfc->cmd_base[chip_cs]))
 			return PTR_ERR(nfc->cmd_base[chip_cs]);
 
-		nfc->addr_base[chip_cs] = devm_platform_ioremap_resource(pdev, mem_region + 2);
+		res = platform_get_resource(pdev, IORESOURCE_MEM,
+					    mem_region + 2);
+		nfc->addr_base[chip_cs] = devm_ioremap_resource(dev, res);
 		if (IS_ERR(nfc->addr_base[chip_cs]))
 			return PTR_ERR(nfc->addr_base[chip_cs]);
 	}

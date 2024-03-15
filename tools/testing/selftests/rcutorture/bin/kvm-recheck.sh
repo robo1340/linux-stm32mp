@@ -33,12 +33,7 @@ do
 		TORTURE_SUITE="`cat $i/../torture_suite`"
 		configfile=`echo $i | sed -e 's,^.*/,,'`
 		rm -f $i/console.log.*.diags
-		case "${TORTURE_SUITE}" in
-		X*)
-			;;
-		*)
-			kvm-recheck-${TORTURE_SUITE}.sh $i
-		esac
+		kvm-recheck-${TORTURE_SUITE}.sh $i
 		if test -f "$i/qemu-retval" && test "`cat $i/qemu-retval`" -ne 0 && test "`cat $i/qemu-retval`" -ne 137
 		then
 			echo QEMU error, output:

@@ -47,8 +47,8 @@ else
 	exit 1
 fi
 
-RCUTORTURE="`pwd`/tools/testing/selftests/rcutorture"; export RCUTORTURE
-PATH=${RCUTORTURE}/bin:$PATH; export PATH
+KVM="`pwd`/tools/testing/selftests/rcutorture"; export KVM
+PATH=${KVM}/bin:$PATH; export PATH
 . functions.sh
 
 dryrun=

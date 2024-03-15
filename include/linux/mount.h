@@ -11,15 +11,17 @@
 #define _LINUX_MOUNT_H
 
 #include <linux/types.h>
-#include <asm/barrier.h>
+#include <linux/list.h>
+#include <linux/nodemask.h>
+#include <linux/spinlock.h>
+#include <linux/seqlock.h>
+#include <linux/atomic.h>
 
 struct super_block;
+struct vfsmount;
 struct dentry;
-struct user_namespace;
-struct file_system_type;
+struct mnt_namespace;
 struct fs_context;
-struct file;
-struct path;
 
 #define MNT_NOSUID	0x01
 #define MNT_NODEV	0x02
@@ -79,6 +81,9 @@ static inline struct user_namespace *mnt_user_ns(const struct vfsmount *mnt)
 	return smp_load_acquire(&mnt->mnt_userns);
 }
 
+struct file; /* forward dec */
+struct path;
+
 extern int mnt_want_write(struct vfsmount *mnt);
 extern int mnt_want_write_file(struct file *file);
 extern void mnt_drop_write(struct vfsmount *mnt);
@@ -89,10 +94,12 @@ extern struct vfsmount *mnt_clone_internal(const struct path *path);
 extern bool __mnt_is_readonly(struct vfsmount *mnt);
 extern bool mnt_may_suid(struct vfsmount *mnt);
 
+struct path;
 extern struct vfsmount *clone_private_mount(const struct path *path);
 extern int __mnt_want_write(struct vfsmount *);
 extern void __mnt_drop_write(struct vfsmount *);
 
+struct file_system_type;
 extern struct vfsmount *fc_mount(struct fs_context *fc);
 extern struct vfsmount *vfs_create_mount(struct fs_context *fc);
 extern struct vfsmount *vfs_kern_mount(struct file_system_type *type,
@@ -106,20 +113,11 @@ extern void mnt_set_expiry(struct vfsmount *mnt, struct list_head *expiry_list);
 extern void mark_mounts_for_expiry(struct list_head *mounts);
 
 extern dev_t name_to_dev_t(const char *name);
+
+extern unsigned int sysctl_mount_max;
+
 extern bool path_is_mountpoint(const struct path *path);
 
-extern bool our_mnt(struct vfsmount *mnt);
-
-extern struct vfsmount *kern_mount(struct file_system_type *);
-extern void kern_unmount(struct vfsmount *mnt);
-extern int may_umount_tree(struct vfsmount *);
-extern int may_umount(struct vfsmount *);
-extern long do_mount(const char *, const char __user *,
-		     const char *, unsigned long, void *);
-extern struct vfsmount *collect_mounts(const struct path *);
-extern void drop_collected_mounts(struct vfsmount *);
-extern int iterate_mounts(int (*)(struct vfsmount *, void *), void *,
-			  struct vfsmount *);
 extern void kern_unmount_array(struct vfsmount *mnt[], unsigned int num);
 
 #endif /* _LINUX_MOUNT_H */

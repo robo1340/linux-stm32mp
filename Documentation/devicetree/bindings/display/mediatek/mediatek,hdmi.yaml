@@ -51,10 +51,7 @@ properties:
 
   mediatek,syscon-hdmi:
     $ref: '/schemas/types.yaml#/definitions/phandle-array'
-    items:
-      - items:
-          - description: phandle to system configuration registers
-          - description: register offset in the system configuration registers
+    maxItems: 1
     description: |
       phandle link and register offset to the system configuration registers.
 

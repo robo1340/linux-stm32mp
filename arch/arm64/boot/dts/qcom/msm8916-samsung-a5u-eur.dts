@@ -7,7 +7,6 @@
 / {
 	model = "Samsung Galaxy A5U (EUR)";
 	compatible = "samsung,a5u-eur", "qcom,msm8916";
-	chassis-type = "handset";
 
 	reg_touch_key: regulator-touch-key {
 		compatible = "regulator-fixed";
@@ -42,7 +41,7 @@
 		touchscreen-size-x = <720>;
 		touchscreen-size-y = <1280>;
 
-		avdd-supply = <&reg_vdd_tsp_a>;
+		avdd-supply = <&reg_vdd_tsp>;
 		vdd-supply = <&pm8916_l6>;
 
 		pinctrl-names = "default";
@@ -64,6 +63,14 @@
 &msmgpio {
 	tkey_en_default: tkey-en-default {
 		pins = "gpio97";
+		function = "gpio";
+
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	ts_int_default: ts-int-default {
+		pins = "gpio13";
 		function = "gpio";
 
 		drive-strength = <2>;

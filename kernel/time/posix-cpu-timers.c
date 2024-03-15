@@ -15,7 +15,6 @@
 #include <linux/workqueue.h>
 #include <linux/compat.h>
 #include <linux/sched/deadline.h>
-#include <linux/task_work.h>
 
 #include "posix-timers.h"
 
@@ -35,20 +34,14 @@ void posix_cputimers_group_init(struct posix_cputimers *pct, u64 cpu_limit)
  * tsk->signal->posix_cputimers.bases[clock].nextevt expiration cache if
  * necessary. Needs siglock protection since other code may update the
  * expiration cache as well.
- *
- * Returns 0 on success, -ESRCH on failure.  Can fail if the task is exiting and
- * we cannot lock_task_sighand.  Cannot fail if task is current.
  */
-int update_rlimit_cpu(struct task_struct *task, unsigned long rlim_new)
+void update_rlimit_cpu(struct task_struct *task, unsigned long rlim_new)
 {
 	u64 nsecs = rlim_new * NSEC_PER_SEC;
-	unsigned long irq_fl;
 
-	if (!lock_task_sighand(task, &irq_fl))
-		return -ESRCH;
+	spin_lock_irq(&task->sighand->siglock);
 	set_process_cpu_timer(task, CPUCLOCK_PROF, &nsecs, NULL);
-	unlock_task_sighand(task, &irq_fl);
-	return 0;
+	spin_unlock_irq(&task->sighand->siglock);
 }
 
 /*
@@ -847,8 +840,6 @@ static u64 collect_timerqueue(struct timerqueue_head *head,
 			return expires;
 
 		ctmr->firing = 1;
-		/* See posix_cpu_timer_wait_running() */
-		rcu_assign_pointer(ctmr->handling, current);
 		cpu_timer_dequeue(ctmr);
 		list_add_tail(&ctmr->elist, firing);
 	}
@@ -872,7 +863,7 @@ static inline void check_dl_overrun(struct task_struct *tsk)
 {
 	if (tsk->dl.dl_overrun) {
 		tsk->dl.dl_overrun = 0;
-		send_signal_locked(SIGXCPU, SEND_SIG_PRIV, tsk, PIDTYPE_TGID);
+		__group_send_sig_info(SIGXCPU, SEND_SIG_PRIV, tsk);
 	}
 }
 
@@ -886,7 +877,7 @@ static bool check_rlimit(u64 time, u64 limit, int signo, bool rt, bool hard)
 			rt ? "RT" : "CPU", hard ? "hard" : "soft",
 			current->comm, task_pid_nr(current));
 	}
-	send_signal_locked(signo, SEND_SIG_PRIV, current, PIDTYPE_TGID);
+	__group_send_sig_info(signo, SEND_SIG_PRIV, current);
 	return true;
 }
 
@@ -960,7 +951,7 @@ static void check_cpu_itimer(struct task_struct *tsk, struct cpu_itimer *it,
 		trace_itimer_expire(signo == SIGPROF ?
 				    ITIMER_PROF : ITIMER_VIRTUAL,
 				    task_tgid(tsk), cur_time);
-		send_signal_locked(signo, SEND_SIG_PRIV, tsk, PIDTYPE_TGID);
+		__group_send_sig_info(signo, SEND_SIG_PRIV, tsk);
 	}
 
 	if (it->expires && it->expires < *expires)
@@ -1164,49 +1155,7 @@ static void handle_posix_cpu_timers(struct task_struct *tsk);
 #ifdef CONFIG_POSIX_CPU_TIMERS_TASK_WORK
 static void posix_cpu_timers_work(struct callback_head *work)
 {
-	struct posix_cputimers_work *cw = container_of(work, typeof(*cw), work);
-
-	mutex_lock(&cw->mutex);
 	handle_posix_cpu_timers(current);
-	mutex_unlock(&cw->mutex);
-}
-
-/*
- * Invoked from the posix-timer core when a cancel operation failed because
- * the timer is marked firing. The caller holds rcu_read_lock(), which
- * protects the timer and the task which is expiring it from being freed.
- */
-static void posix_cpu_timer_wait_running(struct k_itimer *timr)
-{
-	struct task_struct *tsk = rcu_dereference(timr->it.cpu.handling);
-
-	/* Has the handling task completed expiry already? */
-	if (!tsk)
-		return;
-
-	/* Ensure that the task cannot go away */
-	get_task_struct(tsk);
-	/* Now drop the RCU protection so the mutex can be locked */
-	rcu_read_unlock();
-	/* Wait on the expiry mutex */
-	mutex_lock(&tsk->posix_cputimers_work.mutex);
-	/* Release it immediately again. */
-	mutex_unlock(&tsk->posix_cputimers_work.mutex);
-	/* Drop the task reference. */
-	put_task_struct(tsk);
-	/* Relock RCU so the callsite is balanced */
-	rcu_read_lock();
-}
-
-static void posix_cpu_timer_wait_running_nsleep(struct k_itimer *timr)
-{
-	/* Ensure that timr->it.cpu.handling task cannot go away */
-	rcu_read_lock();
-	spin_unlock_irq(&timr->it_lock);
-	posix_cpu_timer_wait_running(timr);
-	rcu_read_unlock();
-	/* @timr is on stack and is valid */
-	spin_lock_irq(&timr->it_lock);
 }
 
 /*
@@ -1222,7 +1171,6 @@ void clear_posix_cputimers_work(struct task_struct *p)
 	       sizeof(p->posix_cputimers_work.work));
 	init_task_work(&p->posix_cputimers_work.work,
 		       posix_cpu_timers_work);
-	mutex_init(&p->posix_cputimers_work.mutex);
 	p->posix_cputimers_work.scheduled = false;
 }
 
@@ -1299,18 +1247,6 @@ static inline void __run_posix_cpu_timers(struct task_struct *tsk)
 	lockdep_posixtimer_enter();
 	handle_posix_cpu_timers(tsk);
 	lockdep_posixtimer_exit();
-}
-
-static void posix_cpu_timer_wait_running(struct k_itimer *timr)
-{
-	cpu_relax();
-}
-
-static void posix_cpu_timer_wait_running_nsleep(struct k_itimer *timr)
-{
-	spin_unlock_irq(&timr->it_lock);
-	cpu_relax();
-	spin_lock_irq(&timr->it_lock);
 }
 
 static inline bool posix_cpu_timers_work_scheduled(struct task_struct *tsk)
@@ -1421,8 +1357,6 @@ static void handle_posix_cpu_timers(struct task_struct *tsk)
 		 */
 		if (likely(cpu_firing >= 0))
 			cpu_timer_fire(timer);
-		/* See posix_cpu_timer_wait_running() */
-		rcu_assign_pointer(timer->it.cpu.handling, NULL);
 		spin_unlock(&timer->it_lock);
 	}
 }
@@ -1557,16 +1491,23 @@ static int do_cpu_nanosleep(const clockid_t which_clock, int flags,
 		expires = cpu_timer_getexpires(&timer.it.cpu);
 		error = posix_cpu_timer_set(&timer, 0, &zero_it, &it);
 		if (!error) {
-			/* Timer is now unarmed, deletion can not fail. */
+			/*
+			 * Timer is now unarmed, deletion can not fail.
+			 */
 			posix_cpu_timer_del(&timer);
-		} else {
-			while (error == TIMER_RETRY) {
-				posix_cpu_timer_wait_running_nsleep(&timer);
-				error = posix_cpu_timer_del(&timer);
-			}
 		}
-
 		spin_unlock_irq(&timer.it_lock);
+
+		while (error == TIMER_RETRY) {
+			/*
+			 * We need to handle case when timer was or is in the
+			 * middle of firing. In other cases we already freed
+			 * resources.
+			 */
+			spin_lock_irq(&timer.it_lock);
+			error = posix_cpu_timer_del(&timer);
+			spin_unlock_irq(&timer.it_lock);
+		}
 
 		if ((it.it_value.tv_sec | it.it_value.tv_nsec) == 0) {
 			/*
@@ -1676,7 +1617,6 @@ const struct k_clock clock_posix_cpu = {
 	.timer_del		= posix_cpu_timer_del,
 	.timer_get		= posix_cpu_timer_get,
 	.timer_rearm		= posix_cpu_timer_rearm,
-	.timer_wait_running	= posix_cpu_timer_wait_running,
 };
 
 const struct k_clock clock_process = {

@@ -10,6 +10,7 @@
 #include <linux/hpet.h>
 #include <linux/pci.h>
 #include <linux/irq.h>
+#include <linux/intel-iommu.h>
 #include <linux/acpi.h>
 #include <linux/irqdomain.h>
 #include <linux/crash_dump.h>
@@ -20,7 +21,6 @@
 #include <asm/irq_remapping.h>
 #include <asm/pci-direct.h>
 
-#include "iommu.h"
 #include "../irq_remapping.h"
 #include "cap_audit.h"
 
@@ -494,8 +494,7 @@ static void iommu_set_irq_remapping(struct intel_iommu *iommu, int mode)
 	 * Global invalidation of interrupt entry cache to make sure the
 	 * hardware uses the new irq remapping table.
 	 */
-	if (!cap_esirtps(iommu->cap))
-		qi_global_iec(iommu);
+	qi_global_iec(iommu);
 }
 
 static void iommu_enable_irq_remapping(struct intel_iommu *iommu)
@@ -681,8 +680,7 @@ static void iommu_disable_irq_remapping(struct intel_iommu *iommu)
 	 * global invalidation of interrupt entry cache before disabling
 	 * interrupt-remapping.
 	 */
-	if (!cap_esirtps(iommu->cap))
-		qi_global_iec(iommu);
+	qi_global_iec(iommu);
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
 

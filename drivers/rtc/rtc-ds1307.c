@@ -1955,7 +1955,7 @@ static int ds1307_probe(struct i2c_client *client,
 		dev_info(ds1307->dev,
 			 "'wakeup-source' is set, request for an IRQ is disabled!\n");
 		/* We cannot support UIE mode if we do not have an IRQ line */
-		clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, ds1307->rtc->features);
+		ds1307->rtc->uie_unsupported = 1;
 	}
 
 	if (want_irq) {

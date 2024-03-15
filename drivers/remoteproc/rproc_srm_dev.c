@@ -544,6 +544,8 @@ static int rproc_srm_dev_notify_cb(struct notifier_block *nb, unsigned long evt,
 	struct rpmsg_srm_msg *i, o;
 	int ret = 0;
 
+	dev_dbg(dev, "%s\n", __func__);
+
 	desc = (struct rpmsg_srm_msg_desc *)data;
 	i = desc->msg;
 	o = *i;
@@ -611,6 +613,8 @@ rproc_srm_dev_unbind(struct device *dev, struct device *master, void *data)
 {
 	struct rproc_srm_dev *rproc_srm_dev = dev_get_drvdata(dev);
 
+	dev_dbg(dev, "%s\n", __func__);
+
 	rproc_srm_dev_regus_unsetup(rproc_srm_dev);
 	rproc_srm_dev_clocks_unsetup(rproc_srm_dev);
 
@@ -622,6 +626,8 @@ rproc_srm_dev_bind(struct device *dev, struct device *master, void *data)
 {
 	struct rproc_srm_dev *rproc_srm_dev = dev_get_drvdata(dev);
 	int ret;
+
+	dev_dbg(dev, "%s\n", __func__);
 
 	ret = rproc_srm_dev_clocks_setup(rproc_srm_dev);
 	if (ret)
@@ -701,6 +707,8 @@ static int rproc_srm_dev_remove(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct rproc_srm_dev *rproc_srm_dev = dev_get_drvdata(dev);
 
+	dev_dbg(dev, "%s\n", __func__);
+
 	component_del(dev, &rproc_srm_dev_ops);
 
 	rproc_srm_core_unregister_notifier(rproc_srm_dev->core,
@@ -733,4 +741,4 @@ module_platform_driver(rproc_srm_dev_driver);
 
 MODULE_AUTHOR("Fabien Dessenne <fabien.dessenne@st.com>");
 MODULE_DESCRIPTION("Remoteproc System Resource Manager driver - dev");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

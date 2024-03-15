@@ -2040,7 +2040,7 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 	u8 mult = 0;
 	int ret;
 
-	buffering = priv_dev->ep_buf_size - 1;
+	buffering = CDNS3_EP_BUF_SIZE - 1;
 
 	cdns3_configure_dmult(priv_dev, priv_ep);
 
@@ -2059,7 +2059,7 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 		break;
 	default:
 		ep_cfg = EP_CFG_EPTYPE(USB_ENDPOINT_XFER_ISOC);
-		mult = priv_dev->ep_iso_burst - 1;
+		mult = CDNS3_EP_ISO_HS_MULT - 1;
 		buffering = mult + 1;
 	}
 
@@ -2075,14 +2075,14 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 		mult = 0;
 		max_packet_size = 1024;
 		if (priv_ep->type == USB_ENDPOINT_XFER_ISOC) {
-			maxburst = priv_dev->ep_iso_burst - 1;
+			maxburst = CDNS3_EP_ISO_SS_BURST - 1;
 			buffering = (mult + 1) *
 				    (maxburst + 1);
 
 			if (priv_ep->interval > 1)
 				buffering++;
 		} else {
-			maxburst = priv_dev->ep_buf_size - 1;
+			maxburst = CDNS3_EP_BUF_SIZE - 1;
 		}
 		break;
 	default:
@@ -2096,10 +2096,6 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 		priv_ep->trb_burst_size = 64;
 	else
 		priv_ep->trb_burst_size = 16;
-
-	mult = min_t(u8, mult, EP_CFG_MULT_MAX);
-	buffering = min_t(u8, buffering, EP_CFG_BUFFERING_MAX);
-	maxburst = min_t(u8, maxburst, EP_CFG_MAXBURST_MAX);
 
 	/* onchip buffer is only allocated before configuration */
 	if (!priv_dev->hw_configured_flag) {
@@ -2614,7 +2610,6 @@ int cdns3_gadget_ep_dequeue(struct usb_ep *ep,
 	u8 req_on_hw_ring = 0;
 	unsigned long flags;
 	int ret = 0;
-	int val;
 
 	if (!ep || !request || !ep->desc)
 		return -EINVAL;
@@ -2650,13 +2645,6 @@ found:
 
 	/* Update ring only if removed request is on pending_req_list list */
 	if (req_on_hw_ring && link_trb) {
-		/* Stop DMA */
-		writel(EP_CMD_DFLUSH, &priv_dev->regs->ep_cmd);
-
-		/* wait for DFLUSH cleared */
-		readl_poll_timeout_atomic(&priv_dev->regs->ep_cmd, val,
-					  !(val & EP_CMD_DFLUSH), 1, 1000);
-
 		link_trb->buffer = cpu_to_le32(TRB_BUFFER(priv_ep->trb_pool_dma +
 			((priv_req->end_trb + 1) * TRB_SIZE)));
 		link_trb->control = cpu_to_le32((le32_to_cpu(link_trb->control) & TRB_CYCLE) |
@@ -2667,10 +2655,6 @@ found:
 	}
 
 	cdns3_gadget_giveback(priv_ep, priv_req, -ECONNRESET);
-
-	req = cdns3_next_request(&priv_ep->pending_req_list);
-	if (req)
-		cdns3_rearm_transfer(priv_ep, 1);
 
 not_found:
 	spin_unlock_irqrestore(&priv_dev->lock, flags);
@@ -2986,40 +2970,6 @@ static int cdns3_gadget_udc_stop(struct usb_gadget *gadget)
 	return 0;
 }
 
-/**
- * cdns3_gadget_check_config - ensure cdns3 can support the USB configuration
- * @gadget: pointer to the USB gadget
- *
- * Used to record the maximum number of endpoints being used in a USB composite
- * device. (across all configurations)  This is to be used in the calculation
- * of the TXFIFO sizes when resizing internal memory for individual endpoints.
- * It will help ensured that the resizing logic reserves enough space for at
- * least one max packet.
- */
-static int cdns3_gadget_check_config(struct usb_gadget *gadget)
-{
-	struct cdns3_device *priv_dev = gadget_to_cdns3_device(gadget);
-	struct usb_ep *ep;
-	int n_in = 0;
-	int total;
-
-	list_for_each_entry(ep, &gadget->ep_list, ep_list) {
-		if (ep->claimed && (ep->address & USB_DIR_IN))
-			n_in++;
-	}
-
-	/* 2KB are reserved for EP0, 1KB for out*/
-	total = 2 + n_in + 1;
-
-	if (total > priv_dev->onchip_buffers)
-		return -ENOMEM;
-
-	priv_dev->ep_buf_size = priv_dev->ep_iso_burst =
-			(priv_dev->onchip_buffers - 2) / (n_in + 1);
-
-	return 0;
-}
-
 static const struct usb_gadget_ops cdns3_gadget_ops = {
 	.get_frame = cdns3_gadget_get_frame,
 	.wakeup = cdns3_gadget_wakeup,
@@ -3028,7 +2978,6 @@ static const struct usb_gadget_ops cdns3_gadget_ops = {
 	.udc_start = cdns3_gadget_udc_start,
 	.udc_stop = cdns3_gadget_udc_stop,
 	.match_ep = cdns3_gadget_match_ep,
-	.check_config = cdns3_gadget_check_config,
 };
 
 static void cdns3_free_all_eps(struct cdns3_device *priv_dev)

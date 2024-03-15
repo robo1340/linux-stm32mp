@@ -679,13 +679,9 @@ static struct NTFS_DE *hdr_find_e(const struct ntfs_index *indx,
 	u32 e_size, e_key_len;
 	u32 end = le32_to_cpu(hdr->used);
 	u32 off = le32_to_cpu(hdr->de_off);
-	u32 total = le32_to_cpu(hdr->total);
 	u16 offs[128];
 
 fill_table:
-	if (end > total)
-		return NULL;
-
 	if (off + sizeof(struct NTFS_DE) > end)
 		return NULL;
 
@@ -801,10 +797,6 @@ static inline struct NTFS_DE *hdr_delete_de(struct INDEX_HDR *hdr,
 	u16 esize = le16_to_cpu(re->size);
 	u32 off = PtrOffset(hdr, re);
 	int bytes = used - (off + esize);
-
-	/* check INDEX_HDR valid before using INDEX_HDR */
-	if (!check_index_header(hdr, le32_to_cpu(hdr->total)))
-		return NULL;
 
 	if (off >= used || esize < sizeof(struct NTFS_DE) ||
 	    bytes < sizeof(struct NTFS_DE))
@@ -1025,12 +1017,6 @@ ok:
 		err = 0;
 	}
 
-	/* check for index header length */
-	if (offsetof(struct INDEX_BUFFER, ihdr) + ib->ihdr.used > bytes) {
-		err = -EINVAL;
-		goto out;
-	}
-
 	in->index = ib;
 	*node = in;
 
@@ -1056,15 +1042,18 @@ int indx_find(struct ntfs_index *indx, struct ntfs_inode *ni,
 {
 	int err;
 	struct NTFS_DE *e;
+	const struct INDEX_HDR *hdr;
 	struct indx_node *node;
 
 	if (!root)
 		root = indx_get_root(&ni->dir, ni, NULL, NULL);
 
 	if (!root) {
-		/* Should not happen. */
-		return -EINVAL;
+		err = -EINVAL;
+		goto out;
 	}
+
+	hdr = &root->ihdr;
 
 	/* Check cache. */
 	e = fnd->level ? fnd->de[fnd->level - 1] : fnd->root_de;
@@ -1079,35 +1068,39 @@ int indx_find(struct ntfs_index *indx, struct ntfs_inode *ni,
 	fnd_clear(fnd);
 
 	/* Lookup entry that is <= to the search value. */
-	e = hdr_find_e(indx, &root->ihdr, key, key_len, ctx, diff);
+	e = hdr_find_e(indx, hdr, key, key_len, ctx, diff);
 	if (!e)
 		return -EINVAL;
 
 	fnd->root_de = e;
+	err = 0;
 
 	for (;;) {
 		node = NULL;
-		if (*diff >= 0 || !de_has_vcn_ex(e))
-			break;
+		if (*diff >= 0 || !de_has_vcn_ex(e)) {
+			*entry = e;
+			goto out;
+		}
 
 		/* Read next level. */
 		err = indx_read(indx, ni, de_get_vbn(e), &node);
 		if (err)
-			return err;
+			goto out;
 
 		/* Lookup entry that is <= to the search value. */
 		e = hdr_find_e(indx, &node->index->ihdr, key, key_len, ctx,
 			       diff);
 		if (!e) {
+			err = -EINVAL;
 			put_indx_node(node);
-			return -EINVAL;
+			goto out;
 		}
 
 		fnd_push(fnd, node, e);
 	}
 
-	*entry = e;
-	return 0;
+out:
+	return err;
 }
 
 int indx_find_sort(struct ntfs_index *indx, struct ntfs_inode *ni,
@@ -1361,7 +1354,7 @@ static int indx_create_allocate(struct ntfs_index *indx, struct ntfs_inode *ni,
 		goto out;
 
 	err = ni_insert_nonresident(ni, ATTR_ALLOC, in->name, in->name_len,
-				    &run, 0, len, 0, &alloc, NULL, NULL);
+				    &run, 0, len, 0, &alloc, NULL);
 	if (err)
 		goto out1;
 
@@ -1692,8 +1685,8 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,
 {
 	int err;
 	const struct NTFS_DE *sp;
-	struct NTFS_DE *e, *de_t, *up_e;
-	struct indx_node *n2;
+	struct NTFS_DE *e, *de_t, *up_e = NULL;
+	struct indx_node *n2 = NULL;
 	struct indx_node *n1 = fnd->nodes[level];
 	struct INDEX_HDR *hdr1 = &n1->index->ihdr;
 	struct INDEX_HDR *hdr2;

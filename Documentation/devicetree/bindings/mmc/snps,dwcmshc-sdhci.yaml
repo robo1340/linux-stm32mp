@@ -17,7 +17,6 @@ properties:
   compatible:
     enum:
       - rockchip,rk3568-dwcmshc
-      - rockchip,rk3588-dwcmshc
       - snps,dwcmshc-sdhci
 
   reg:

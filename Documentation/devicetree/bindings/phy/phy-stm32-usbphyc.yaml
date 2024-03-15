@@ -24,7 +24,7 @@ description:
   |_ UTMI switch_______|          OTG controller
 
 maintainers:
-  - Amelie Delaunay <amelie.delaunay@foss.st.com>
+  - Amelie Delaunay <amelie.delaunay@st.com>
 
 properties:
   compatible:
@@ -80,9 +80,8 @@ patternProperties:
 
       connector:
         type: object
-        $ref: /schemas/connector/usb-connector.yaml
-        unevaluatedProperties: false
-
+        allOf:
+          - $ref: ../connector/usb-connector.yaml
         properties:
           vbus-supply: true
 

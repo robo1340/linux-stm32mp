@@ -19,7 +19,6 @@
 #include <asm/div64.h>
 #include <asm/time.h>
 #include <asm/param.h>
-#include <asm/firmware.h>
 
 typedef u64 __nocast cputime_t;
 typedef u64 __nocast cputime64_t;
@@ -95,7 +94,7 @@ static notrace inline void account_stolen_time(void)
 		struct lppaca *lp = local_paca->lppaca_ptr;
 
 		if (unlikely(local_paca->dtl_ridx != be64_to_cpu(lp->dtl_idx)))
-			pseries_accumulate_stolen_time();
+			accumulate_stolen_time();
 	}
 #endif
 }

@@ -14,7 +14,6 @@
 #include <linux/memblock.h>
 #include <linux/gfp.h>
 #include <linux/init.h>
-#include <asm/asm-extable.h>
 #include <asm/facility.h>
 #include <asm/page-states.h>
 

@@ -10,9 +10,6 @@
  * Based on rpmsg performance statistics driver by Michal Simek, which in turn
  * was based on TI & Google OMX rpmsg driver.
  */
-
-#define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
-
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/fs.h>
@@ -76,9 +73,7 @@ int rpmsg_chrdev_eptdev_destroy(struct device *dev, void *data)
 
 	mutex_lock(&eptdev->ept_lock);
 	if (eptdev->ept) {
-		/* The default endpoint is released by the rpmsg core */
-		if (!eptdev->default_ept)
-			rpmsg_destroy_ept(eptdev->ept);
+		rpmsg_destroy_ept(eptdev->ept);
 		eptdev->ept = NULL;
 	}
 	mutex_unlock(&eptdev->ept_lock);
@@ -250,13 +245,10 @@ static ssize_t rpmsg_eptdev_write_iter(struct kiocb *iocb,
 		goto unlock_eptdev;
 	}
 
-	if (filp->f_flags & O_NONBLOCK) {
+	if (filp->f_flags & O_NONBLOCK)
 		ret = rpmsg_trysendto(eptdev->ept, kbuf, len, eptdev->chinfo.dst);
-		if (ret == -ENOMEM)
-			ret = -EAGAIN;
-	} else {
+	else
 		ret = rpmsg_sendto(eptdev->ept, kbuf, len, eptdev->chinfo.dst);
-	}
 
 unlock_eptdev:
 	mutex_unlock(&eptdev->ept_lock);
@@ -426,12 +418,15 @@ int rpmsg_chrdev_eptdev_create(struct rpmsg_device *rpdev, struct device *parent
 			       struct rpmsg_channel_info chinfo)
 {
 	struct rpmsg_eptdev *eptdev;
+	int ret;
 
 	eptdev = rpmsg_chrdev_eptdev_alloc(rpdev, parent);
 	if (IS_ERR(eptdev))
 		return PTR_ERR(eptdev);
 
-	return rpmsg_chrdev_eptdev_add(eptdev, chinfo);
+	ret = rpmsg_chrdev_eptdev_add(eptdev, chinfo);
+
+	return ret;
 }
 EXPORT_SYMBOL(rpmsg_chrdev_eptdev_create);
 
@@ -489,7 +484,7 @@ static int rpmsg_chrdev_init(void)
 
 	ret = alloc_chrdev_region(&rpmsg_major, 0, RPMSG_DEV_MAX, "rpmsg_char");
 	if (ret < 0) {
-		pr_err("failed to allocate char dev region\n");
+		pr_err("rpmsg: failed to allocate char dev region\n");
 		return ret;
 	}
 

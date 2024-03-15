@@ -14,6 +14,7 @@
 #include <linux/irqchip.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
+#include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -56,6 +57,7 @@ struct stm32_exti_chip_data {
 };
 
 struct stm32_exti_host_data {
+	struct list_head lh;
 	void __iomem *base;
 	struct stm32_exti_chip_data *chips_data;
 	const struct stm32_exti_drv_data *drv_data;
@@ -63,7 +65,7 @@ struct stm32_exti_host_data {
 	struct device_node *irq_map_node;
 };
 
-static struct stm32_exti_host_data *stm32_host_data;
+static LIST_HEAD(stm32_host_data_list);
 
 static const struct stm32_exti_bank stm32f4xx_exti_b1 = {
 	.imr_ofst	= 0x00,
@@ -131,7 +133,6 @@ static const struct stm32_exti_drv_data stm32h7xx_drv_data = {
 
 static const struct stm32_exti_bank stm32mp1_exti_b1 = {
 	.imr_ofst	= 0x80,
-	.emr_ofst	= UNDEF_REG,
 	.rtsr_ofst	= 0x00,
 	.ftsr_ofst	= 0x04,
 	.swier_ofst	= 0x08,
@@ -142,7 +143,6 @@ static const struct stm32_exti_bank stm32mp1_exti_b1 = {
 
 static const struct stm32_exti_bank stm32mp1_exti_b2 = {
 	.imr_ofst	= 0x90,
-	.emr_ofst	= UNDEF_REG,
 	.rtsr_ofst	= 0x20,
 	.ftsr_ofst	= 0x24,
 	.swier_ofst	= 0x28,
@@ -153,7 +153,6 @@ static const struct stm32_exti_bank stm32mp1_exti_b2 = {
 
 static const struct stm32_exti_bank stm32mp1_exti_b3 = {
 	.imr_ofst	= 0xA0,
-	.emr_ofst	= UNDEF_REG,
 	.rtsr_ofst	= 0x40,
 	.ftsr_ofst	= 0x44,
 	.swier_ofst	= 0x48,
@@ -173,16 +172,6 @@ static struct irq_chip stm32_exti_h_chip_direct;
 
 #define EXTI_INVALID_IRQ       U8_MAX
 #define STM32MP1_DESC_IRQ_SIZE (ARRAY_SIZE(stm32mp1_exti_banks) * IRQS_PER_BANK)
-
-/*
- * Use some intentionally tricky logic here to initialize the whole array to
- * EXTI_INVALID_IRQ, but then override certain fields, requiring us to indicate
- * that we "know" that there are overrides in this structure, and we'll need to
- * disable that warning from W=1 builds.
- */
-__diag_push();
-__diag_ignore_all("-Woverride-init",
-		  "logic to initialize all and then override some is OK");
 
 static const u8 stm32mp1_desc_irq[] = {
 	/* default value */
@@ -219,6 +208,8 @@ static const u8 stm32mp1_desc_irq[] = {
 	[31] = 53,
 	[32] = 82,
 	[33] = 83,
+	[43] = 75,
+	[44] = 98,
 	[47] = 93,
 	[48] = 138,
 	[50] = 139,
@@ -276,8 +267,6 @@ static const u8 stm32mp13_desc_irq[] = {
 	[68] = 63,
 	[70] = 98,
 };
-
-__diag_pop();
 
 static const struct stm32_exti_drv_data stm32mp1_drv_data = {
 	.exti_banks = stm32mp1_exti_banks,
@@ -523,8 +512,6 @@ static void stm32_exti_h_eoi(struct irq_data *d)
 	if (stm32_bank->fpr_ofst != UNDEF_REG)
 		stm32_exti_write_bit(d, stm32_bank->fpr_ofst);
 
-	chip_data->mask_cache = stm32_exti_set_bit(d, stm32_bank->imr_ofst);
-
 	raw_spin_unlock(&chip_data->rlock);
 
 	if (d->parent_data->chip)
@@ -555,6 +542,16 @@ static void stm32_exti_h_unmask(struct irq_data *d)
 
 	if (d->parent_data->chip)
 		irq_chip_unmask_parent(d);
+}
+
+static int stm32_exti_h_request_resources(struct irq_data *data)
+{
+	data = data->parent_data;
+
+	if (data->chip->irq_request_resources)
+		return data->chip->irq_request_resources(data);
+
+	return 0;
 }
 
 static int stm32_exti_h_set_type(struct irq_data *d, unsigned int type)
@@ -633,50 +630,65 @@ static void stm32_exti_h_ack(struct irq_data *d)
 		irq_chip_ack_parent(d);
 }
 
-static int __maybe_unused stm32_exti_h_suspend(void)
+static int stm32_exti_h_suspend(void)
 {
 	struct stm32_exti_chip_data *chip_data;
+	struct stm32_exti_host_data *host_data;
 	int i;
 
-	for (i = 0; i < stm32_host_data->drv_data->bank_nr; i++) {
-		chip_data = &stm32_host_data->chips_data[i];
-		raw_spin_lock(&chip_data->rlock);
-		stm32_chip_suspend(chip_data, chip_data->wake_active);
-		raw_spin_unlock(&chip_data->rlock);
+	list_for_each_entry(host_data, &stm32_host_data_list, lh) {
+		for (i = 0; i < host_data->drv_data->bank_nr; i++) {
+			chip_data = &host_data->chips_data[i];
+			raw_spin_lock(&chip_data->rlock);
+			stm32_chip_suspend(chip_data, chip_data->wake_active);
+			raw_spin_unlock(&chip_data->rlock);
+		}
 	}
 
 	return 0;
 }
 
-static void __maybe_unused stm32_exti_h_resume(void)
+static void stm32_exti_h_resume(void)
 {
 	struct stm32_exti_chip_data *chip_data;
+	struct stm32_exti_host_data *host_data;
 	int i;
 
-	for (i = 0; i < stm32_host_data->drv_data->bank_nr; i++) {
-		chip_data = &stm32_host_data->chips_data[i];
-		raw_spin_lock(&chip_data->rlock);
-		stm32_chip_resume(chip_data, chip_data->mask_cache);
-		raw_spin_unlock(&chip_data->rlock);
+	list_for_each_entry(host_data, &stm32_host_data_list, lh) {
+		for (i = 0; i < host_data->drv_data->bank_nr; i++) {
+			chip_data = &host_data->chips_data[i];
+			raw_spin_lock(&chip_data->rlock);
+			stm32_chip_resume(chip_data, chip_data->mask_cache);
+			raw_spin_unlock(&chip_data->rlock);
+		}
 	}
 }
 
 static struct syscore_ops stm32_exti_h_syscore_ops = {
-#ifdef CONFIG_PM_SLEEP
 	.suspend	= stm32_exti_h_suspend,
 	.resume		= stm32_exti_h_resume,
-#endif
 };
 
 static void stm32_exti_h_syscore_init(struct stm32_exti_host_data *host_data)
 {
-	stm32_host_data = host_data;
-	register_syscore_ops(&stm32_exti_h_syscore_ops);
+	if (IS_ENABLED(CONFIG_PM_SLEEP)) {
+		if (list_empty(&stm32_host_data_list))
+			register_syscore_ops(&stm32_exti_h_syscore_ops);
+
+		list_add_tail(&host_data->lh, &stm32_host_data_list);
+	}
 }
 
-static void stm32_exti_h_syscore_deinit(void)
+static void stm32_exti_h_syscore_deinit(struct platform_device *pdev)
 {
-	unregister_syscore_ops(&stm32_exti_h_syscore_ops);
+	struct stm32_exti_host_data *host_data = platform_get_drvdata(pdev);
+
+	if (IS_ENABLED(CONFIG_PM_SLEEP)) {
+		list_del(&host_data->lh);
+
+		if (list_empty(&stm32_host_data_list))
+			unregister_syscore_ops(&stm32_exti_h_syscore_ops);
+	}
 }
 
 static int stm32_exti_h_retrigger(struct irq_data *d)
@@ -697,7 +709,7 @@ static struct irq_chip stm32_exti_h_chip = {
 	.irq_ack		= stm32_exti_h_ack,
 	.irq_mask		= stm32_exti_h_mask,
 	.irq_unmask		= stm32_exti_h_unmask,
-	.irq_request_resources	= irq_chip_request_resources_parent,
+	.irq_request_resources	= stm32_exti_h_request_resources,
 	.irq_release_resources	= irq_chip_release_resources_parent,
 	.irq_retrigger		= stm32_exti_h_retrigger,
 	.irq_set_type		= stm32_exti_h_set_type,
@@ -712,7 +724,7 @@ static struct irq_chip stm32_exti_h_chip_direct = {
 	.irq_ack		= irq_chip_ack_parent,
 	.irq_mask		= stm32_exti_h_mask,
 	.irq_unmask		= stm32_exti_h_unmask,
-	.irq_request_resources	= irq_chip_request_resources_parent,
+	.irq_request_resources	= stm32_exti_h_request_resources,
 	.irq_release_resources	= irq_chip_release_resources_parent,
 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
 	.irq_set_type		= irq_chip_set_type_parent,
@@ -737,8 +749,7 @@ static int stm32_exti_h_domain_match(struct irq_domain *dm,
 	if (node != host_data->irq_map_node->parent)
 		return 0;
 
-	return (to_of_node(dm->parent->fwnode) ==
-		of_irq_find_parent(host_data->irq_map_node->parent));
+	return (to_of_node(dm->parent->fwnode) == of_irq_find_parent(host_data->irq_map_node->parent));
 }
 
 static int stm32_exti_h_domain_select(struct irq_domain *dm,
@@ -816,7 +827,7 @@ static int stm32_exti_h_domain_alloc(struct irq_domain *dm,
 		return irq_domain_alloc_irqs_parent(dm, virq, 1, &p_fwspec);
 	}
 
-	if (!host_data->drv_data->desc_irqs)
+	if (!host_data->drv_data || !host_data->drv_data->desc_irqs)
 		return -EINVAL;
 
 	desc_irq = host_data->drv_data->desc_irqs[hwirq];
@@ -856,8 +867,6 @@ stm32_exti_host_data *stm32_exti_host_init(const struct stm32_exti_drv_data *dd,
 		goto free_chips_data;
 	}
 
-	stm32_host_data = host_data;
-
 	return host_data;
 
 free_chips_data:
@@ -889,7 +898,7 @@ stm32_exti_chip_data *stm32_exti_chip_init(struct stm32_exti_host_data *h_data,
 	 * clear registers to avoid residue
 	 */
 	writel_relaxed(0, base + stm32_bank->imr_ofst);
-	if (stm32_bank->emr_ofst != UNDEF_REG)
+	if (stm32_bank->emr_ofst)
 		writel_relaxed(0, base + stm32_bank->emr_ofst);
 
 	pr_info("%pOF: bank%d\n", node, bank_idx);
@@ -991,7 +1000,7 @@ static void stm32_exti_remove_irq(void *data)
 
 static int stm32_exti_remove(struct platform_device *pdev)
 {
-	stm32_exti_h_syscore_deinit();
+	stm32_exti_h_syscore_deinit(pdev);
 	return 0;
 }
 
@@ -1004,11 +1013,14 @@ static int stm32_exti_probe(struct platform_device *pdev)
 	struct fwnode_handle *fwnode;
 	struct stm32_exti_host_data *host_data;
 	const struct stm32_exti_drv_data *drv_data;
+	struct resource *res;
 	char *name;
 
 	host_data = devm_kzalloc(dev, sizeof(*host_data), GFP_KERNEL);
 	if (!host_data)
 		return -ENOMEM;
+
+	platform_set_drvdata(pdev, host_data);
 
 	/* check for optional hwspinlock which may be not available yet */
 	ret = of_hwspin_lock_get_id(np, 0);
@@ -1042,7 +1054,8 @@ static int stm32_exti_probe(struct platform_device *pdev)
 	if (!host_data->chips_data)
 		return -ENOMEM;
 
-	host_data->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	host_data->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(host_data->base))
 		return PTR_ERR(host_data->base);
 

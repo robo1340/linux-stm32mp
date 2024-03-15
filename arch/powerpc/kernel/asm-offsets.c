@@ -9,6 +9,8 @@
  * #defines from the assembly-language output.
  */
 
+#define GENERATING_ASM_OFFSETS	/* asm/smp.h */
+
 #include <linux/compat.h>
 #include <linux/signal.h>
 #include <linux/sched.h>
@@ -54,12 +56,12 @@
 #endif
 
 #ifdef CONFIG_PPC32
-#ifdef CONFIG_BOOKE_OR_40x
+#if defined(CONFIG_BOOKE) || defined(CONFIG_40x)
 #include "head_booke.h"
 #endif
 #endif
 
-#if defined(CONFIG_PPC_E500)
+#if defined(CONFIG_PPC_FSL_BOOK3E)
 #include "../mm/mmu_decl.h"
 #endif
 
@@ -91,10 +93,10 @@ int main(void)
 #endif /* CONFIG_PPC64 */
 	OFFSET(TASK_STACK, task_struct, stack);
 #ifdef CONFIG_SMP
-	OFFSET(TASK_CPU, task_struct, thread_info.cpu);
+	OFFSET(TASK_CPU, task_struct, cpu);
 #endif
 
-#ifdef CONFIG_LIVEPATCH_64
+#ifdef CONFIG_LIVEPATCH
 	OFFSET(TI_livepatch_sp, thread_info, livepatch_sp);
 #endif
 
@@ -139,7 +141,6 @@ int main(void)
 	OFFSET(THR11, thread_struct, r11);
 	OFFSET(THLR, thread_struct, lr);
 	OFFSET(THCTR, thread_struct, ctr);
-	OFFSET(THSR0, thread_struct, sr0);
 #endif
 #ifdef CONFIG_SPE
 	OFFSET(THREAD_EVR0, thread_struct, evr[0]);
@@ -197,7 +198,7 @@ int main(void)
 	OFFSET(PACAIRQHAPPENED, paca_struct, irq_happened);
 	OFFSET(PACA_FTRACE_ENABLED, paca_struct, ftrace_enabled);
 
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	OFFSET(PACAPGD, paca_struct, pgd);
 	OFFSET(PACA_KERNELPGD, paca_struct, kernel_pgd);
 	OFFSET(PACA_EXGEN, paca_struct, exgen);
@@ -213,18 +214,16 @@ int main(void)
 	OFFSET(TCD_ESEL_NEXT, tlb_core_data, esel_next);
 	OFFSET(TCD_ESEL_MAX, tlb_core_data, esel_max);
 	OFFSET(TCD_ESEL_FIRST, tlb_core_data, esel_first);
-#endif /* CONFIG_PPC_BOOK3E_64 */
+#endif /* CONFIG_PPC_BOOK3E */
 
 #ifdef CONFIG_PPC_BOOK3S_64
 	OFFSET(PACA_EXGEN, paca_struct, exgen);
 	OFFSET(PACA_EXMC, paca_struct, exmc);
 	OFFSET(PACA_EXNMI, paca_struct, exnmi);
-#ifdef CONFIG_PPC_64S_HASH_MMU
 	OFFSET(PACA_SLBSHADOWPTR, paca_struct, slb_shadow_ptr);
 	OFFSET(SLBSHADOW_STACKVSID, slb_shadow, save_area[SLB_NUM_BOLTED - 1].vsid);
 	OFFSET(SLBSHADOW_STACKESID, slb_shadow, save_area[SLB_NUM_BOLTED - 1].esid);
 	OFFSET(SLBSHADOW_SAVEAREA, slb_shadow, save_area);
-#endif
 	OFFSET(LPPACA_PMCINUSE, lppaca, pmcregs_in_use);
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
 	OFFSET(PACA_PMCINUSE, paca_struct, pmcregs_in_use);
@@ -248,7 +247,7 @@ int main(void)
 #ifdef CONFIG_PPC64
 	OFFSET(PACA_EXIT_SAVE_R1, paca_struct, exit_save_r1);
 #endif
-#ifdef CONFIG_PPC_BOOK3E_64
+#ifdef CONFIG_PPC_BOOK3E
 	OFFSET(PACA_TRAP_SAVE, paca_struct, trap_save);
 #endif
 	OFFSET(PACA_SPRG_VDSO, paca_struct, sprg_vdso);
@@ -379,7 +378,7 @@ int main(void)
 	OFFSET(VCPU_SPRG2, kvm_vcpu, arch.shregs.sprg2);
 	OFFSET(VCPU_SPRG3, kvm_vcpu, arch.shregs.sprg3);
 #endif
-#ifdef CONFIG_KVM_BOOK3S_HV_P8_TIMING
+#ifdef CONFIG_KVM_BOOK3S_HV_EXIT_TIMING
 	OFFSET(VCPU_TB_RMENTRY, kvm_vcpu, arch.rm_entry);
 	OFFSET(VCPU_TB_RMINTR, kvm_vcpu, arch.rm_intr);
 	OFFSET(VCPU_TB_RMEXIT, kvm_vcpu, arch.rm_exit);
@@ -651,7 +650,7 @@ int main(void)
 	DEFINE(PGD_T_LOG2, PGD_T_LOG2);
 	DEFINE(PTE_T_LOG2, PTE_T_LOG2);
 #endif
-#ifdef CONFIG_PPC_E500
+#ifdef CONFIG_PPC_FSL_BOOK3E
 	DEFINE(TLBCAM_SIZE, sizeof(struct tlbcam));
 	OFFSET(TLBCAM_MAS0, tlbcam, MAS0);
 	OFFSET(TLBCAM_MAS1, tlbcam, MAS1);

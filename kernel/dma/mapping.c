@@ -10,7 +10,6 @@
 #include <linux/dma-map-ops.h>
 #include <linux/export.h>
 #include <linux/gfp.h>
-#include <linux/kmsan.h>
 #include <linux/of_device.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -157,7 +156,6 @@ dma_addr_t dma_map_page_attrs(struct device *dev, struct page *page,
 		addr = dma_direct_map_page(dev, page, offset, size, dir, attrs);
 	else
 		addr = ops->map_page(dev, page, offset, size, dir, attrs);
-	kmsan_handle_dma(page, offset, size, dir);
 	debug_dma_map_page(dev, page, offset, size, dir, addr, attrs);
 
 	return addr;
@@ -196,13 +194,11 @@ static int __dma_map_sg_attrs(struct device *dev, struct scatterlist *sg,
 	else
 		ents = ops->map_sg(dev, sg, nents, dir, attrs);
 
-	if (ents > 0) {
-		kmsan_handle_dma_sg(sg, nents, dir);
+	if (ents > 0)
 		debug_dma_map_sg(dev, sg, nents, ents, dir, attrs);
-	} else if (WARN_ON_ONCE(ents != -EINVAL && ents != -ENOMEM &&
-				ents != -EIO && ents != -EREMOTEIO)) {
+	else if (WARN_ON_ONCE(ents != -EINVAL && ents != -ENOMEM &&
+			      ents != -EIO))
 		return -EIO;
-	}
 
 	return ents;
 }
@@ -253,15 +249,12 @@ EXPORT_SYMBOL(dma_map_sg_attrs);
  * Returns 0 on success or a negative error code on error. The following
  * error codes are supported with the given meaning:
  *
- *   -EINVAL		An invalid argument, unaligned access or other error
- *			in usage. Will not succeed if retried.
- *   -ENOMEM		Insufficient resources (like memory or IOVA space) to
- *			complete the mapping. Should succeed if retried later.
- *   -EIO		Legacy error code with an unknown meaning. eg. this is
- *			returned if a lower level call returned
- *			DMA_MAPPING_ERROR.
- *   -EREMOTEIO		The DMA device cannot access P2PDMA memory specified
- *			in the sg_table. This will not succeed if retried.
+ *   -EINVAL	An invalid argument, unaligned access or other error
+ *		in usage. Will not succeed if retried.
+ *   -ENOMEM	Insufficient resources (like memory or IOVA space) to
+ *		complete the mapping. Should succeed if retried later.
+ *   -EIO	Legacy error code with an unknown meaning. eg. this is
+ *		returned if a lower level call returned DMA_MAPPING_ERROR.
  */
 int dma_map_sgtable(struct device *dev, struct sg_table *sgt,
 		    enum dma_data_direction dir, unsigned long attrs)
@@ -414,6 +407,8 @@ EXPORT_SYMBOL(dma_get_sgtable_attrs);
  */
 pgprot_t dma_pgprot(struct device *dev, pgprot_t prot, unsigned long attrs)
 {
+	if (force_dma_unencrypted(dev))
+		prot = pgprot_decrypted(prot);
 	if (dev_is_dma_coherent(dev))
 		return prot;
 #ifdef CONFIG_ARCH_HAS_DMA_WRITE_COMBINE
@@ -711,7 +706,7 @@ int dma_mmap_noncontiguous(struct device *dev, struct vm_area_struct *vma,
 }
 EXPORT_SYMBOL_GPL(dma_mmap_noncontiguous);
 
-static int dma_supported(struct device *dev, u64 mask)
+int dma_supported(struct device *dev, u64 mask)
 {
 	const struct dma_map_ops *ops = get_dma_ops(dev);
 
@@ -725,24 +720,7 @@ static int dma_supported(struct device *dev, u64 mask)
 		return 1;
 	return ops->dma_supported(dev, mask);
 }
-
-bool dma_pci_p2pdma_supported(struct device *dev)
-{
-	const struct dma_map_ops *ops = get_dma_ops(dev);
-
-	/* if ops is not set, dma direct will be used which supports P2PDMA */
-	if (!ops)
-		return true;
-
-	/*
-	 * Note: dma_ops_bypass is not checked here because P2PDMA should
-	 * not be used with dma mapping ops that do not have support even
-	 * if the specific device is bypassing them.
-	 */
-
-	return ops->flags & DMA_F_PCI_P2PDMA_SUPPORTED;
-}
-EXPORT_SYMBOL_GPL(dma_pci_p2pdma_supported);
+EXPORT_SYMBOL(dma_supported);
 
 #ifdef CONFIG_ARCH_HAS_DMA_SET_MASK
 void arch_dma_set_mask(struct device *dev, u64 mask);
@@ -767,6 +745,7 @@ int dma_set_mask(struct device *dev, u64 mask)
 }
 EXPORT_SYMBOL(dma_set_mask);
 
+#ifndef CONFIG_ARCH_HAS_DMA_SET_COHERENT_MASK
 int dma_set_coherent_mask(struct device *dev, u64 mask)
 {
 	/*
@@ -782,6 +761,7 @@ int dma_set_coherent_mask(struct device *dev, u64 mask)
 	return 0;
 }
 EXPORT_SYMBOL(dma_set_coherent_mask);
+#endif
 
 size_t dma_max_mapping_size(struct device *dev)
 {
@@ -796,18 +776,6 @@ size_t dma_max_mapping_size(struct device *dev)
 	return size;
 }
 EXPORT_SYMBOL_GPL(dma_max_mapping_size);
-
-size_t dma_opt_mapping_size(struct device *dev)
-{
-	const struct dma_map_ops *ops = get_dma_ops(dev);
-	size_t size = SIZE_MAX;
-
-	if (ops && ops->opt_mapping_size)
-		size = ops->opt_mapping_size();
-
-	return min(dma_max_mapping_size(dev), size);
-}
-EXPORT_SYMBOL_GPL(dma_opt_mapping_size);
 
 bool dma_need_sync(struct device *dev, dma_addr_t dma_addr)
 {

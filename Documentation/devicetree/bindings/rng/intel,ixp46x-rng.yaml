@@ -33,3 +33,4 @@ examples:
       compatible = "intel,ixp46x-rng";
       reg = <0x70002100 4>;
     };
+

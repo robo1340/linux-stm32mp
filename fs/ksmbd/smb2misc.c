@@ -6,6 +6,7 @@
 
 #include "glob.h"
 #include "nterr.h"
+#include "smb2pdu.h"
 #include "smb_common.h"
 #include "smbstatus.h"
 #include "mgmt/user_session.h"
@@ -135,7 +136,7 @@ static int smb2_get_data_area_len(unsigned int *off, unsigned int *len,
 		    ((struct smb2_write_req *)hdr)->Length) {
 			*off = max_t(unsigned int,
 				     le16_to_cpu(((struct smb2_write_req *)hdr)->DataOffset),
-				     offsetof(struct smb2_write_req, Buffer));
+				     offsetof(struct smb2_write_req, Buffer) - 4);
 			*len = le32_to_cpu(((struct smb2_write_req *)hdr)->Length);
 			break;
 		}
@@ -149,11 +150,15 @@ static int smb2_get_data_area_len(unsigned int *off, unsigned int *len,
 		break;
 	case SMB2_LOCK:
 	{
-		unsigned short lock_count;
+		int lock_count;
 
-		lock_count = le16_to_cpu(((struct smb2_lock_req *)hdr)->LockCount);
+		/*
+		 * smb2_lock request size is 48 included single
+		 * smb2_lock_element structure size.
+		 */
+		lock_count = le16_to_cpu(((struct smb2_lock_req *)hdr)->LockCount) - 1;
 		if (lock_count > 0) {
-			*off = offsetof(struct smb2_lock_req, locks);
+			*off = __SMB2_HEADER_STRUCTURE_SIZE + 48;
 			*len = sizeof(struct smb2_lock_element) * lock_count;
 		}
 		break;
@@ -346,11 +351,16 @@ static int smb2_validate_credit_charge(struct ksmbd_conn *conn,
 
 int ksmbd_smb2_check_message(struct ksmbd_work *work)
 {
-	struct smb2_pdu *pdu = ksmbd_req_buf_next(work);
+	struct smb2_pdu *pdu = work->request_buf;
 	struct smb2_hdr *hdr = &pdu->hdr;
 	int command;
 	__u32 clc_len;  /* calculated length */
-	__u32 len = get_rfc1002_len(work->request_buf);
+	__u32 len = get_rfc1002_len(pdu);
+
+	if (work->next_smb2_rcv_hdr_off) {
+		pdu = ksmbd_req_buf_next(work);
+		hdr = &pdu->hdr;
+	}
 
 	if (le32_to_cpu(hdr->NextCommand) > 0)
 		len = le32_to_cpu(hdr->NextCommand);
@@ -408,19 +418,20 @@ int ksmbd_smb2_check_message(struct ksmbd_work *work)
 			goto validate_credit;
 
 		/*
-		 * SMB2 NEGOTIATE request will be validated when message
-		 * handling proceeds.
+		 * windows client also pad up to 8 bytes when compounding.
+		 * If pad is longer than eight bytes, log the server behavior
+		 * (once), since may indicate a problem but allow it and
+		 * continue since the frame is parseable.
 		 */
-		if (command == SMB2_NEGOTIATE_HE)
+		if (clc_len < len) {
+			ksmbd_debug(SMB,
+				    "cli req padded more than expected. Length %d not %d for cmd:%d mid:%llu\n",
+				    len, clc_len, command,
+				    le64_to_cpu(hdr->MessageId));
 			goto validate_credit;
+		}
 
-		/*
-		 * Allow a message that padded to 8byte boundary.
-		 */
-		if (clc_len < len && (len - clc_len) < 8)
-			goto validate_credit;
-
-		pr_err_ratelimited(
+		ksmbd_debug(SMB,
 			    "cli req too short, len %d not %d. cmd:%d mid:%llu\n",
 			    len, clc_len, command,
 			    le64_to_cpu(hdr->MessageId));

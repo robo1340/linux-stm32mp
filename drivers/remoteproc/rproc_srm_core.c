@@ -75,6 +75,8 @@ static int rpmsg_srm_probe(struct rpmsg_device *rpdev)
 {
 	int ret;
 
+	dev_dbg(&rpdev->dev, "%s\n", __func__);
+
 	/* Send an empty message to complete the initialization */
 	ret = rpmsg_send(rpdev->ept, NULL, 0);
 	if (ret)
@@ -86,6 +88,7 @@ static int rpmsg_srm_probe(struct rpmsg_device *rpdev)
 static void rpmsg_srm_remove(struct rpmsg_device *rpdev)
 {
 	/* Note : the remove ops is mandatory */
+	dev_dbg(&rpdev->dev, "%s\n", __func__);
 }
 
 static struct rpmsg_device_id rpmsg_srm_id_table[] = {
@@ -155,6 +158,8 @@ static int rproc_srm_core_prepare(struct rproc_subdev *subdev)
 	struct component_match *match = NULL;
 	int ret;
 
+	dev_dbg(dev, "%s\n", __func__);
+
 	init_completion(&rproc_srm_core->all_bound);
 
 	ret = devm_of_platform_populate(dev);
@@ -220,6 +225,8 @@ static void rproc_srm_core_unprepare(struct rproc_subdev *subdev)
 	struct rproc_srm_core *rproc_srm_core = to_rproc_srm_core(subdev);
 	struct device *dev = rproc_srm_core->dev;
 
+	dev_dbg(dev, "%s\n", __func__);
+
 	if (!atomic_read(&rproc_srm_core->prepared))
 		return;
 
@@ -236,6 +243,8 @@ static int rproc_srm_core_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct rproc *rproc = dev_get_drvdata(dev->parent);
 	struct rproc_srm_core *rproc_srm_core;
+
+	dev_dbg(dev, "%s\n", __func__);
 
 	rproc_srm_core = devm_kzalloc(dev, sizeof(struct rproc_srm_core),
 				      GFP_KERNEL);
@@ -260,6 +269,8 @@ static int rproc_srm_core_remove(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct rproc_srm_core *rproc_srm_core = dev_get_drvdata(dev);
 	struct rproc *rproc = dev_get_drvdata(dev->parent);
+
+	dev_dbg(dev, "%s\n", __func__);
 
 	if (atomic_read(&rproc->power) > 0)
 		dev_warn(dev, "Releasing resources while firmware running!\n");
@@ -289,4 +300,4 @@ module_platform_driver(rproc_srm_core_driver);
 
 MODULE_AUTHOR("Fabien Dessenne <fabien.dessenne@st.com>");
 MODULE_DESCRIPTION("Remoteproc System Resource Manager driver - core");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

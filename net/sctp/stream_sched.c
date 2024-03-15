@@ -46,10 +46,6 @@ static int sctp_sched_fcfs_init_sid(struct sctp_stream *stream, __u16 sid,
 	return 0;
 }
 
-static void sctp_sched_fcfs_free_sid(struct sctp_stream *stream, __u16 sid)
-{
-}
-
 static void sctp_sched_fcfs_free(struct sctp_stream *stream)
 {
 }
@@ -100,7 +96,6 @@ static struct sctp_sched_ops sctp_sched_fcfs = {
 	.get = sctp_sched_fcfs_get,
 	.init = sctp_sched_fcfs_init,
 	.init_sid = sctp_sched_fcfs_init_sid,
-	.free_sid = sctp_sched_fcfs_free_sid,
 	.free = sctp_sched_fcfs_free,
 	.enqueue = sctp_sched_fcfs_enqueue,
 	.dequeue = sctp_sched_fcfs_dequeue,
@@ -151,11 +146,14 @@ int sctp_sched_set_sched(struct sctp_association *asoc,
 
 		/* Give the next scheduler a clean slate. */
 		for (i = 0; i < asoc->stream.outcnt; i++) {
-			struct sctp_stream_out_ext *ext = SCTP_SO(&asoc->stream, i)->ext;
+			void *p = SCTP_SO(&asoc->stream, i)->ext;
 
-			if (!ext)
+			if (!p)
 				continue;
-			memset_after(ext, 0, outq);
+
+			p += offsetofend(struct sctp_stream_out_ext, outq);
+			memset(p, 0, sizeof(struct sctp_stream_out_ext) -
+				     offsetofend(struct sctp_stream_out_ext, outq));
 		}
 	}
 

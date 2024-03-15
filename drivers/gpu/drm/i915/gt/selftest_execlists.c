@@ -5,7 +5,6 @@
 
 #include <linux/prime_numbers.h>
 
-#include "gem/i915_gem_internal.h"
 #include "gem/i915_gem_pm.h"
 #include "gt/intel_engine_heartbeat.h"
 #include "gt/intel_reset.h"
@@ -993,7 +992,7 @@ static int live_timeslice_preempt(void *arg)
 	 * need to preempt the current task and replace it with another
 	 * ready task.
 	 */
-	if (!CONFIG_DRM_I915_TIMESLICE_DURATION)
+	if (!IS_ACTIVE(CONFIG_DRM_I915_TIMESLICE_DURATION))
 		return 0;
 
 	obj = i915_gem_object_create_internal(gt->i915, PAGE_SIZE);
@@ -1123,7 +1122,7 @@ static int live_timeslice_rewind(void *arg)
 	 * but only a few of those requests, forcing us to rewind the
 	 * RING_TAIL of the original request.
 	 */
-	if (!CONFIG_DRM_I915_TIMESLICE_DURATION)
+	if (!IS_ACTIVE(CONFIG_DRM_I915_TIMESLICE_DURATION))
 		return 0;
 
 	for_each_engine(engine, gt, id) {
@@ -1300,7 +1299,7 @@ static int live_timeslice_queue(void *arg)
 	 * ELSP[1] is already occupied, so must rely on timeslicing to
 	 * eject ELSP[0] in favour of the queue.)
 	 */
-	if (!CONFIG_DRM_I915_TIMESLICE_DURATION)
+	if (!IS_ACTIVE(CONFIG_DRM_I915_TIMESLICE_DURATION))
 		return 0;
 
 	obj = i915_gem_object_create_internal(gt->i915, PAGE_SIZE);
@@ -1421,7 +1420,7 @@ static int live_timeslice_nopreempt(void *arg)
 	 * We should not timeslice into a request that is marked with
 	 * I915_REQUEST_NOPREEMPT.
 	 */
-	if (!CONFIG_DRM_I915_TIMESLICE_DURATION)
+	if (!IS_ACTIVE(CONFIG_DRM_I915_TIMESLICE_DURATION))
 		return 0;
 
 	if (igt_spinner_init(&spin, gt))
@@ -1736,21 +1735,21 @@ static int live_preempt(void *arg)
 	enum intel_engine_id id;
 	int err = -ENOMEM;
 
+	if (igt_spinner_init(&spin_hi, gt))
+		return -ENOMEM;
+
+	if (igt_spinner_init(&spin_lo, gt))
+		goto err_spin_hi;
+
 	ctx_hi = kernel_context(gt->i915, NULL);
 	if (!ctx_hi)
-		return -ENOMEM;
+		goto err_spin_lo;
 	ctx_hi->sched.priority = I915_CONTEXT_MAX_USER_PRIORITY;
 
 	ctx_lo = kernel_context(gt->i915, NULL);
 	if (!ctx_lo)
 		goto err_ctx_hi;
 	ctx_lo->sched.priority = I915_CONTEXT_MIN_USER_PRIORITY;
-
-	if (igt_spinner_init(&spin_hi, gt))
-		goto err_ctx_lo;
-
-	if (igt_spinner_init(&spin_lo, gt))
-		goto err_spin_hi;
 
 	for_each_engine(engine, gt, id) {
 		struct igt_live_test t;
@@ -1761,14 +1760,14 @@ static int live_preempt(void *arg)
 
 		if (igt_live_test_begin(&t, gt->i915, __func__, engine->name)) {
 			err = -EIO;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		rq = spinner_create_request(&spin_lo, ctx_lo, engine,
 					    MI_ARB_CHECK);
 		if (IS_ERR(rq)) {
 			err = PTR_ERR(rq);
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		i915_request_add(rq);
@@ -1777,7 +1776,7 @@ static int live_preempt(void *arg)
 			GEM_TRACE_DUMP();
 			intel_gt_set_wedged(gt);
 			err = -EIO;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		rq = spinner_create_request(&spin_hi, ctx_hi, engine,
@@ -1785,7 +1784,7 @@ static int live_preempt(void *arg)
 		if (IS_ERR(rq)) {
 			igt_spinner_end(&spin_lo);
 			err = PTR_ERR(rq);
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		i915_request_add(rq);
@@ -1794,7 +1793,7 @@ static int live_preempt(void *arg)
 			GEM_TRACE_DUMP();
 			intel_gt_set_wedged(gt);
 			err = -EIO;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		igt_spinner_end(&spin_hi);
@@ -1802,19 +1801,19 @@ static int live_preempt(void *arg)
 
 		if (igt_live_test_end(&t)) {
 			err = -EIO;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 	}
 
 	err = 0;
-err_spin_lo:
-	igt_spinner_fini(&spin_lo);
-err_spin_hi:
-	igt_spinner_fini(&spin_hi);
 err_ctx_lo:
 	kernel_context_close(ctx_lo);
 err_ctx_hi:
 	kernel_context_close(ctx_hi);
+err_spin_lo:
+	igt_spinner_fini(&spin_lo);
+err_spin_hi:
+	igt_spinner_fini(&spin_hi);
 	return err;
 }
 
@@ -1828,19 +1827,19 @@ static int live_late_preempt(void *arg)
 	enum intel_engine_id id;
 	int err = -ENOMEM;
 
+	if (igt_spinner_init(&spin_hi, gt))
+		return -ENOMEM;
+
+	if (igt_spinner_init(&spin_lo, gt))
+		goto err_spin_hi;
+
 	ctx_hi = kernel_context(gt->i915, NULL);
 	if (!ctx_hi)
-		return -ENOMEM;
+		goto err_spin_lo;
 
 	ctx_lo = kernel_context(gt->i915, NULL);
 	if (!ctx_lo)
 		goto err_ctx_hi;
-
-	if (igt_spinner_init(&spin_hi, gt))
-		goto err_ctx_lo;
-
-	if (igt_spinner_init(&spin_lo, gt))
-		goto err_spin_hi;
 
 	/* Make sure ctx_lo stays before ctx_hi until we trigger preemption. */
 	ctx_lo->sched.priority = 1;
@@ -1854,14 +1853,14 @@ static int live_late_preempt(void *arg)
 
 		if (igt_live_test_begin(&t, gt->i915, __func__, engine->name)) {
 			err = -EIO;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		rq = spinner_create_request(&spin_lo, ctx_lo, engine,
 					    MI_ARB_CHECK);
 		if (IS_ERR(rq)) {
 			err = PTR_ERR(rq);
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		i915_request_add(rq);
@@ -1875,7 +1874,7 @@ static int live_late_preempt(void *arg)
 		if (IS_ERR(rq)) {
 			igt_spinner_end(&spin_lo);
 			err = PTR_ERR(rq);
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		i915_request_add(rq);
@@ -1898,19 +1897,19 @@ static int live_late_preempt(void *arg)
 
 		if (igt_live_test_end(&t)) {
 			err = -EIO;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 	}
 
 	err = 0;
-err_spin_lo:
-	igt_spinner_fini(&spin_lo);
-err_spin_hi:
-	igt_spinner_fini(&spin_hi);
 err_ctx_lo:
 	kernel_context_close(ctx_lo);
 err_ctx_hi:
 	kernel_context_close(ctx_hi);
+err_spin_lo:
+	igt_spinner_fini(&spin_lo);
+err_spin_hi:
+	igt_spinner_fini(&spin_hi);
 	return err;
 
 err_wedged:
@@ -1918,7 +1917,7 @@ err_wedged:
 	igt_spinner_end(&spin_lo);
 	intel_gt_set_wedged(gt);
 	err = -EIO;
-	goto err_spin_lo;
+	goto err_ctx_lo;
 }
 
 struct preempt_client {
@@ -2077,7 +2076,7 @@ static int __cancel_active0(struct live_preempt_cancel *arg)
 		goto out;
 	}
 
-	intel_context_ban(rq->context, rq);
+	intel_context_set_banned(rq->context);
 	err = intel_engine_pulse(arg->engine);
 	if (err)
 		goto out;
@@ -2136,7 +2135,7 @@ static int __cancel_active1(struct live_preempt_cancel *arg)
 	if (err)
 		goto out;
 
-	intel_context_ban(rq[1]->context, rq[1]);
+	intel_context_set_banned(rq[1]->context);
 	err = intel_engine_pulse(arg->engine);
 	if (err)
 		goto out;
@@ -2219,7 +2218,7 @@ static int __cancel_queued(struct live_preempt_cancel *arg)
 	if (err)
 		goto out;
 
-	intel_context_ban(rq[2]->context, rq[2]);
+	intel_context_set_banned(rq[2]->context);
 	err = intel_engine_pulse(arg->engine);
 	if (err)
 		goto out;
@@ -2234,13 +2233,7 @@ static int __cancel_queued(struct live_preempt_cancel *arg)
 		goto out;
 	}
 
-	/*
-	 * The behavior between having semaphores and not is different. With
-	 * semaphores the subsequent request is on the hardware and not cancelled
-	 * while without the request is held in the driver and cancelled.
-	 */
-	if (intel_engine_has_semaphores(rq[1]->engine) &&
-	    rq[1]->fence.error != 0) {
+	if (rq[1]->fence.error != 0) {
 		pr_err("Normal inflight1 request did not complete\n");
 		err = -EINVAL;
 		goto out;
@@ -2267,7 +2260,7 @@ static int __cancel_hostile(struct live_preempt_cancel *arg)
 	int err;
 
 	/* Preempt cancel non-preemptible spinner in ELSP0 */
-	if (!CONFIG_DRM_I915_PREEMPT_TIMEOUT)
+	if (!IS_ACTIVE(CONFIG_DRM_I915_PREEMPT_TIMEOUT))
 		return 0;
 
 	if (!intel_has_reset_engine(arg->engine->gt))
@@ -2288,7 +2281,7 @@ static int __cancel_hostile(struct live_preempt_cancel *arg)
 		goto out;
 	}
 
-	intel_context_ban(rq->context, rq);
+	intel_context_set_banned(rq->context);
 	err = intel_engine_pulse(arg->engine); /* force reset */
 	if (err)
 		goto out;
@@ -2323,7 +2316,7 @@ static int __cancel_fail(struct live_preempt_cancel *arg)
 	struct i915_request *rq;
 	int err;
 
-	if (!CONFIG_DRM_I915_PREEMPT_TIMEOUT)
+	if (!IS_ACTIVE(CONFIG_DRM_I915_PREEMPT_TIMEOUT))
 		return 0;
 
 	if (!intel_has_reset_engine(engine->gt))
@@ -3382,24 +3375,24 @@ static int live_preempt_timeout(void *arg)
 	 * Check that we force preemption to occur by cancelling the previous
 	 * context if it refuses to yield the GPU.
 	 */
-	if (!CONFIG_DRM_I915_PREEMPT_TIMEOUT)
+	if (!IS_ACTIVE(CONFIG_DRM_I915_PREEMPT_TIMEOUT))
 		return 0;
 
 	if (!intel_has_reset_engine(gt))
 		return 0;
 
+	if (igt_spinner_init(&spin_lo, gt))
+		return -ENOMEM;
+
 	ctx_hi = kernel_context(gt->i915, NULL);
 	if (!ctx_hi)
-		return -ENOMEM;
+		goto err_spin_lo;
 	ctx_hi->sched.priority = I915_CONTEXT_MAX_USER_PRIORITY;
 
 	ctx_lo = kernel_context(gt->i915, NULL);
 	if (!ctx_lo)
 		goto err_ctx_hi;
 	ctx_lo->sched.priority = I915_CONTEXT_MIN_USER_PRIORITY;
-
-	if (igt_spinner_init(&spin_lo, gt))
-		goto err_ctx_lo;
 
 	for_each_engine(engine, gt, id) {
 		unsigned long saved_timeout;
@@ -3412,21 +3405,21 @@ static int live_preempt_timeout(void *arg)
 					    MI_NOOP); /* preemption disabled */
 		if (IS_ERR(rq)) {
 			err = PTR_ERR(rq);
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		i915_request_add(rq);
 		if (!igt_wait_for_spinner(&spin_lo, rq)) {
 			intel_gt_set_wedged(gt);
 			err = -EIO;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		rq = igt_request_alloc(ctx_hi, engine);
 		if (IS_ERR(rq)) {
 			igt_spinner_end(&spin_lo);
 			err = PTR_ERR(rq);
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		/* Flush the previous CS ack before changing timeouts */
@@ -3446,7 +3439,7 @@ static int live_preempt_timeout(void *arg)
 			intel_gt_set_wedged(gt);
 			i915_request_put(rq);
 			err = -ETIME;
-			goto err_spin_lo;
+			goto err_ctx_lo;
 		}
 
 		igt_spinner_end(&spin_lo);
@@ -3454,12 +3447,12 @@ static int live_preempt_timeout(void *arg)
 	}
 
 	err = 0;
-err_spin_lo:
-	igt_spinner_fini(&spin_lo);
 err_ctx_lo:
 	kernel_context_close(ctx_lo);
 err_ctx_hi:
 	kernel_context_close(ctx_hi);
+err_spin_lo:
+	igt_spinner_fini(&spin_lo);
 	return err;
 }
 
@@ -3500,7 +3493,7 @@ static int smoke_submit(struct preempt_smoke *smoke,
 	if (batch) {
 		struct i915_address_space *vm;
 
-		vm = i915_gem_context_get_eb_vm(ctx);
+		vm = i915_gem_context_get_vm_rcu(ctx);
 		vma = i915_vma_instance(batch, vm, NULL);
 		i915_vm_put(vm);
 		if (IS_ERR(vma))
@@ -3740,7 +3733,7 @@ static int nop_virtual_engine(struct intel_gt *gt,
 	GEM_BUG_ON(!nctx || nctx > ARRAY_SIZE(ve));
 
 	for (n = 0; n < nctx; n++) {
-		ve[n] = intel_engine_create_virtual(siblings, nsibling, 0);
+		ve[n] = intel_engine_create_virtual(siblings, nsibling);
 		if (IS_ERR(ve[n])) {
 			err = PTR_ERR(ve[n]);
 			nctx = n;
@@ -3936,7 +3929,7 @@ static int mask_virtual_engine(struct intel_gt *gt,
 	 * restrict it to our desired engine within the virtual engine.
 	 */
 
-	ve = intel_engine_create_virtual(siblings, nsibling, 0);
+	ve = intel_engine_create_virtual(siblings, nsibling);
 	if (IS_ERR(ve)) {
 		err = PTR_ERR(ve);
 		goto out_close;
@@ -4067,7 +4060,7 @@ static int slicein_virtual_engine(struct intel_gt *gt,
 		i915_request_add(rq);
 	}
 
-	ce = intel_engine_create_virtual(siblings, nsibling, 0);
+	ce = intel_engine_create_virtual(siblings, nsibling);
 	if (IS_ERR(ce)) {
 		err = PTR_ERR(ce);
 		goto out;
@@ -4119,7 +4112,7 @@ static int sliceout_virtual_engine(struct intel_gt *gt,
 
 	/* XXX We do not handle oversubscription and fairness with normal rq */
 	for (n = 0; n < nsibling; n++) {
-		ce = intel_engine_create_virtual(siblings, nsibling, 0);
+		ce = intel_engine_create_virtual(siblings, nsibling);
 		if (IS_ERR(ce)) {
 			err = PTR_ERR(ce);
 			goto out;
@@ -4221,7 +4214,7 @@ static int preserved_virtual_engine(struct intel_gt *gt,
 	if (err)
 		goto out_scratch;
 
-	ve = intel_engine_create_virtual(siblings, nsibling, 0);
+	ve = intel_engine_create_virtual(siblings, nsibling);
 	if (IS_ERR(ve)) {
 		err = PTR_ERR(ve);
 		goto out_scratch;
@@ -4361,7 +4354,7 @@ static int reset_virtual_engine(struct intel_gt *gt,
 	if (igt_spinner_init(&spin, gt))
 		return -ENOMEM;
 
-	ve = intel_engine_create_virtual(siblings, nsibling, 0);
+	ve = intel_engine_create_virtual(siblings, nsibling);
 	if (IS_ERR(ve)) {
 		err = PTR_ERR(ve);
 		goto out_spin;
@@ -4509,11 +4502,11 @@ int intel_execlists_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_virtual_reset),
 	};
 
-	if (to_gt(i915)->submission_method != INTEL_SUBMISSION_ELSP)
+	if (i915->gt.submission_method != INTEL_SUBMISSION_ELSP)
 		return 0;
 
-	if (intel_gt_is_wedged(to_gt(i915)))
+	if (intel_gt_is_wedged(&i915->gt))
 		return 0;
 
-	return intel_gt_live_subtests(tests, to_gt(i915));
+	return intel_gt_live_subtests(tests, &i915->gt);
 }

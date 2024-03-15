@@ -19,11 +19,11 @@
 .endm
 
 .macro	context_tracking
-#ifdef CONFIG_CONTEXT_TRACKING_USER
+#ifdef CONFIG_CONTEXT_TRACKING
 	mfcr	a0, epsr
 	btsti	a0, 31
 	bt	1f
-	jbsr	user_exit_callable
+	jbsr	context_tracking_user_exit
 	ldw	a0, (sp, LSAVE_A0)
 	ldw	a1, (sp, LSAVE_A1)
 	ldw	a2, (sp, LSAVE_A2)
@@ -159,8 +159,8 @@ ret_from_exception:
 	and	r10, r9
 	cmpnei	r10, 0
 	bt	exit_work
-#ifdef CONFIG_CONTEXT_TRACKING_USER
-	jbsr	user_enter_callable
+#ifdef CONFIG_CONTEXT_TRACKING
+	jbsr	context_tracking_user_enter
 #endif
 1:
 #ifdef CONFIG_PREEMPTION
@@ -249,7 +249,7 @@ ENTRY(csky_irq)
 
 
 	mov	a0, sp
-	jbsr	generic_handle_arch_irq
+	jbsr	csky_do_IRQ
 
 	jmpi	ret_from_exception
 

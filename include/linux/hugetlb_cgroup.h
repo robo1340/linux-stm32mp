@@ -36,11 +36,6 @@ enum hugetlb_memory_event {
 	HUGETLB_NR_MEMORY_EVENTS,
 };
 
-struct hugetlb_cgroup_per_node {
-	/* hugetlb usage in pages over all hstates. */
-	unsigned long usage[HUGE_MAX_HSTATE];
-};
-
 struct hugetlb_cgroup {
 	struct cgroup_subsys_state css;
 
@@ -62,8 +57,6 @@ struct hugetlb_cgroup {
 
 	/* Handle for "hugetlb.events.local" */
 	struct cgroup_file events_local_file[HUGE_MAX_HSTATE];
-
-	struct hugetlb_cgroup_per_node *nodeinfo[];
 };
 
 static inline struct hugetlb_cgroup *
@@ -90,31 +83,32 @@ hugetlb_cgroup_from_page_rsvd(struct page *page)
 	return __hugetlb_cgroup_from_page(page, true);
 }
 
-static inline void __set_hugetlb_cgroup(struct page *page,
+static inline int __set_hugetlb_cgroup(struct page *page,
 				       struct hugetlb_cgroup *h_cg, bool rsvd)
 {
 	VM_BUG_ON_PAGE(!PageHuge(page), page);
 
 	if (compound_order(page) < HUGETLB_CGROUP_MIN_ORDER)
-		return;
+		return -1;
 	if (rsvd)
 		set_page_private(page + SUBPAGE_INDEX_CGROUP_RSVD,
 				 (unsigned long)h_cg);
 	else
 		set_page_private(page + SUBPAGE_INDEX_CGROUP,
 				 (unsigned long)h_cg);
+	return 0;
 }
 
-static inline void set_hugetlb_cgroup(struct page *page,
+static inline int set_hugetlb_cgroup(struct page *page,
 				     struct hugetlb_cgroup *h_cg)
 {
-	__set_hugetlb_cgroup(page, h_cg, false);
+	return __set_hugetlb_cgroup(page, h_cg, false);
 }
 
-static inline void set_hugetlb_cgroup_rsvd(struct page *page,
+static inline int set_hugetlb_cgroup_rsvd(struct page *page,
 					  struct hugetlb_cgroup *h_cg)
 {
-	__set_hugetlb_cgroup(page, h_cg, true);
+	return __set_hugetlb_cgroup(page, h_cg, true);
 }
 
 static inline bool hugetlb_cgroup_disabled(void)
@@ -132,13 +126,6 @@ static inline void resv_map_dup_hugetlb_cgroup_uncharge_info(
 {
 	if (resv_map->css)
 		css_get(resv_map->css);
-}
-
-static inline void resv_map_put_hugetlb_cgroup_uncharge_info(
-						struct resv_map *resv_map)
-{
-	if (resv_map->css)
-		css_put(resv_map->css);
 }
 
 extern int hugetlb_cgroup_charge_cgroup(int idx, unsigned long nr_pages,
@@ -198,14 +185,16 @@ hugetlb_cgroup_from_page_rsvd(struct page *page)
 	return NULL;
 }
 
-static inline void set_hugetlb_cgroup(struct page *page,
+static inline int set_hugetlb_cgroup(struct page *page,
 				     struct hugetlb_cgroup *h_cg)
 {
+	return 0;
 }
 
-static inline void set_hugetlb_cgroup_rsvd(struct page *page,
+static inline int set_hugetlb_cgroup_rsvd(struct page *page,
 					  struct hugetlb_cgroup *h_cg)
 {
+	return 0;
 }
 
 static inline bool hugetlb_cgroup_disabled(void)
@@ -218,11 +207,6 @@ static inline void hugetlb_cgroup_put_rsvd_cgroup(struct hugetlb_cgroup *h_cg)
 }
 
 static inline void resv_map_dup_hugetlb_cgroup_uncharge_info(
-						struct resv_map *resv_map)
-{
-}
-
-static inline void resv_map_put_hugetlb_cgroup_uncharge_info(
 						struct resv_map *resv_map)
 {
 }

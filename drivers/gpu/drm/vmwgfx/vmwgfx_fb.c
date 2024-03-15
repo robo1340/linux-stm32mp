@@ -26,7 +26,6 @@
  *
  **************************************************************************/
 
-#include <linux/fb.h>
 #include <linux/pci.h>
 
 #include <drm/drm_fourcc.h>
@@ -317,18 +316,19 @@ static int vmw_fb_pan_display(struct fb_var_screeninfo *var,
 	return 0;
 }
 
-static void vmw_deferred_io(struct fb_info *info, struct list_head *pagereflist)
+static void vmw_deferred_io(struct fb_info *info,
+			    struct list_head *pagelist)
 {
 	struct vmw_fb_par *par = info->par;
 	unsigned long start, end, min, max;
 	unsigned long flags;
-	struct fb_deferred_io_pageref *pageref;
+	struct page *page;
 	int y1, y2;
 
 	min = ULONG_MAX;
 	max = 0;
-	list_for_each_entry(pageref, pagereflist, list) {
-		start = pageref->offset;
+	list_for_each_entry(page, pagelist, lru) {
+		start = page->index << PAGE_SHIFT;
 		end = start + PAGE_SIZE - 1;
 		min = min(min, start);
 		max = max(max, end);
@@ -394,15 +394,22 @@ static int vmw_fb_create_bo(struct vmw_private *vmw_priv,
 	struct vmw_buffer_object *vmw_bo;
 	int ret;
 
-	ret = vmw_bo_create(vmw_priv, size,
+	vmw_bo = kmalloc(sizeof(*vmw_bo), GFP_KERNEL);
+	if (!vmw_bo) {
+		ret = -ENOMEM;
+		goto err_unlock;
+	}
+
+	ret = vmw_bo_init(vmw_priv, vmw_bo, size,
 			      &vmw_sys_placement,
 			      false, false,
-			      &vmw_bo_bo_free, &vmw_bo);
+			      &vmw_bo_bo_free);
 	if (unlikely(ret != 0))
-		return ret;
+		goto err_unlock; /* init frees the buffer on failure */
 
 	*out = vmw_bo;
 
+err_unlock:
 	return ret;
 }
 
@@ -619,7 +626,6 @@ static const struct fb_ops vmw_fb_ops = {
 	.fb_imageblit = vmw_fb_imageblit,
 	.fb_pan_display = vmw_fb_pan_display,
 	.fb_blank = vmw_fb_blank,
-	.fb_mmap = fb_deferred_io_mmap,
 };
 
 int vmw_fb_init(struct vmw_private *vmw_priv)

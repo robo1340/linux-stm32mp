@@ -358,7 +358,8 @@ static int fq_init(struct fq *fq, int flows_cnt)
 	if (!fq->flows)
 		return -ENOMEM;
 
-	fq->flows_bitmap = bitmap_zalloc(fq->flows_cnt, GFP_KERNEL);
+	fq->flows_bitmap = kcalloc(BITS_TO_LONGS(fq->flows_cnt), sizeof(long),
+				   GFP_KERNEL);
 	if (!fq->flows_bitmap) {
 		kvfree(fq->flows);
 		fq->flows = NULL;
@@ -382,7 +383,7 @@ static void fq_reset(struct fq *fq,
 	kvfree(fq->flows);
 	fq->flows = NULL;
 
-	bitmap_free(fq->flows_bitmap);
+	kfree(fq->flows_bitmap);
 	fq->flows_bitmap = NULL;
 }
 

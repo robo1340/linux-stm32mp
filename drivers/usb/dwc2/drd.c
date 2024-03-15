@@ -35,8 +35,7 @@ static void dwc2_ovr_init(struct dwc2_hsotg *hsotg)
 
 	spin_unlock_irqrestore(&hsotg->lock, flags);
 
-	dwc2_force_mode(hsotg, (hsotg->dr_mode == USB_DR_MODE_HOST) ||
-				(hsotg->role_sw_default_mode == USB_DR_MODE_HOST));
+	dwc2_force_mode(hsotg, (hsotg->dr_mode == USB_DR_MODE_HOST));
 }
 
 static int dwc2_ovr_avalid(struct dwc2_hsotg *hsotg, bool valid)
@@ -174,12 +173,21 @@ int dwc2_drd_init(struct dwc2_hsotg *hsotg)
 {
 	struct usb_role_switch_desc role_sw_desc = {0};
 	struct usb_role_switch *role_sw;
+	const char *str;
 	int ret;
 
 	if (!device_property_read_bool(hsotg->dev, "usb-role-switch"))
 		return 0;
 
-	hsotg->role_sw_default_mode = usb_get_role_switch_default_mode(hsotg->dev);
+	hsotg->role_sw_default_mode = USB_DR_MODE_UNKNOWN;
+	ret = device_property_read_string(hsotg->dev, "role-switch-default-mode", &str);
+	if (!ret) {
+		if (!strncmp(str, "host", strlen("host")))
+			hsotg->role_sw_default_mode = USB_DR_MODE_HOST;
+		else if (!strncmp(str, "peripheral", strlen("peripheral")))
+			hsotg->role_sw_default_mode = USB_DR_MODE_PERIPHERAL;
+	}
+
 	role_sw_desc.driver_data = hsotg;
 	role_sw_desc.fwnode = dev_fwnode(hsotg->dev);
 	role_sw_desc.set = dwc2_drd_role_sw_set;

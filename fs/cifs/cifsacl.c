@@ -1379,7 +1379,6 @@ chown_chgrp_exit:
 	return rc;
 }
 
-#ifdef CONFIG_CIFS_ALLOW_INSECURE_LEGACY
 struct cifs_ntsd *get_cifs_acl_by_fid(struct cifs_sb_info *cifs_sb,
 				      const struct cifs_fid *cifsfid, u32 *pacllen,
 				      u32 __maybe_unused unused)
@@ -1423,15 +1422,14 @@ static struct cifs_ntsd *get_cifs_acl_by_path(struct cifs_sb_info *cifs_sb,
 	tcon = tlink_tcon(tlink);
 	xid = get_xid();
 
-	oparms = (struct cifs_open_parms) {
-		.tcon = tcon,
-		.cifs_sb = cifs_sb,
-		.desired_access = READ_CONTROL,
-		.create_options = cifs_create_options(cifs_sb, 0),
-		.disposition = FILE_OPEN,
-		.path = path,
-		.fid = &fid,
-	};
+	oparms.tcon = tcon;
+	oparms.cifs_sb = cifs_sb;
+	oparms.desired_access = READ_CONTROL;
+	oparms.create_options = cifs_create_options(cifs_sb, 0);
+	oparms.disposition = FILE_OPEN;
+	oparms.path = path;
+	oparms.fid = &fid;
+	oparms.reconnect = false;
 
 	rc = CIFS_open(xid, &oparms, &oplock, NULL);
 	if (!rc) {
@@ -1490,15 +1488,14 @@ int set_cifs_acl(struct cifs_ntsd *pnntsd, __u32 acllen,
 	else
 		access_flags = WRITE_DAC;
 
-	oparms = (struct cifs_open_parms) {
-		.tcon = tcon,
-		.cifs_sb = cifs_sb,
-		.desired_access = access_flags,
-		.create_options = cifs_create_options(cifs_sb, 0),
-		.disposition = FILE_OPEN,
-		.path = path,
-		.fid = &fid,
-	};
+	oparms.tcon = tcon;
+	oparms.cifs_sb = cifs_sb;
+	oparms.desired_access = access_flags;
+	oparms.create_options = cifs_create_options(cifs_sb, 0);
+	oparms.disposition = FILE_OPEN;
+	oparms.path = path;
+	oparms.fid = &fid;
+	oparms.reconnect = false;
 
 	rc = CIFS_open(xid, &oparms, &oplock, NULL);
 	if (rc) {
@@ -1515,7 +1512,6 @@ out:
 	cifs_put_tlink(tlink);
 	return rc;
 }
-#endif /* CONFIG_CIFS_ALLOW_INSECURE_LEGACY */
 
 /* Translate the CIFS ACL (similar to NTFS ACL) for a file into mode bits */
 int

@@ -119,8 +119,6 @@ struct cpuinfo_x86 {
 	int			x86_cache_mbm_width_offset;
 	int			x86_power;
 	unsigned long		loops_per_jiffy;
-	/* protected processor identification number */
-	u64			ppin;
 	/* cpuid returned max cores value: */
 	u16			x86_max_cores;
 	u16			apicid;
@@ -166,8 +164,7 @@ enum cpuid_regs_idx {
 #define X86_VENDOR_NSC		8
 #define X86_VENDOR_HYGON	9
 #define X86_VENDOR_ZHAOXIN	10
-#define X86_VENDOR_VORTEX	11
-#define X86_VENDOR_NUM		12
+#define X86_VENDOR_NUM		11
 
 #define X86_VENDOR_UNKNOWN	0xff
 
@@ -464,6 +461,9 @@ DECLARE_PER_CPU(struct irq_stack *, hardirq_stack_ptr);
 DECLARE_PER_CPU(struct irq_stack *, softirq_stack_ptr);
 #endif	/* !X86_64 */
 
+extern unsigned int fpu_kernel_xstate_size;
+extern unsigned int fpu_user_xstate_size;
+
 struct perf_event;
 
 struct thread_struct {
@@ -538,12 +538,12 @@ struct thread_struct {
 	 */
 };
 
-extern void fpu_thread_struct_whitelist(unsigned long *offset, unsigned long *size);
-
+/* Whitelist the FPU state from the task_struct for hardened usercopy. */
 static inline void arch_thread_struct_whitelist(unsigned long *offset,
 						unsigned long *size)
 {
-	fpu_thread_struct_whitelist(offset, size);
+	*offset = offsetof(struct thread_struct, fpu.state);
+	*size = fpu_kernel_xstate_size;
 }
 
 static inline void
@@ -559,7 +559,7 @@ static __always_inline void native_swapgs(void)
 #endif
 }
 
-static __always_inline unsigned long current_top_of_stack(void)
+static inline unsigned long current_top_of_stack(void)
 {
 	/*
 	 *  We can't read directly from tss.sp0: sp0 on x86_32 is special in
@@ -569,7 +569,7 @@ static __always_inline unsigned long current_top_of_stack(void)
 	return this_cpu_read_stable(cpu_current_top_of_stack);
 }
 
-static __always_inline bool on_thread_stack(void)
+static inline bool on_thread_stack(void)
 {
 	return (unsigned long)(current_top_of_stack() -
 			       current_stack_pointer) < THREAD_SIZE;
@@ -587,7 +587,10 @@ static inline void load_sp0(unsigned long sp0)
 
 #endif /* CONFIG_PARAVIRT_XXL */
 
-unsigned long __get_wchan(struct task_struct *p);
+/* Free all resources held by a thread. */
+extern void release_thread(struct task_struct *);
+
+unsigned long get_wchan(struct task_struct *p);
 
 /*
  * Generic CPUID function
@@ -805,14 +808,11 @@ static inline u32 amd_get_nodes_per_socket(void)	{ return 0; }
 static inline u32 amd_get_highest_perf(void)		{ return 0; }
 #endif
 
-#define for_each_possible_hypervisor_cpuid_base(function) \
-	for (function = 0x40000000; function < 0x40010000; function += 0x100)
-
 static inline uint32_t hypervisor_cpuid_base(const char *sig, uint32_t leaves)
 {
 	uint32_t base, eax, signature[3];
 
-	for_each_possible_hypervisor_cpuid_base(base) {
+	for (base = 0x40000000; base < 0x40010000; base += 0x100) {
 		cpuid(base, &eax, &signature[0], &signature[1], &signature[2]);
 
 		if (!memcmp(sig, signature, 12) &&
@@ -834,9 +834,8 @@ bool xen_set_default_idle(void);
 #define xen_set_default_idle 0
 #endif
 
-void __noreturn stop_this_cpu(void *dummy);
-void microcode_check(struct cpuinfo_x86 *prev_info);
-void store_cpu_caps(struct cpuinfo_x86 *info);
+void stop_this_cpu(void *dummy);
+void microcode_check(void);
 
 enum l1tf_mitigations {
 	L1TF_MITIGATION_OFF,
@@ -854,13 +853,5 @@ enum mds_mitigations {
 	MDS_MITIGATION_FULL,
 	MDS_MITIGATION_VMWERV,
 };
-
-#ifdef CONFIG_X86_SGX
-int arch_memory_failure(unsigned long pfn, int flags);
-#define arch_memory_failure arch_memory_failure
-
-bool arch_is_platform_page(u64 paddr);
-#define arch_is_platform_page arch_is_platform_page
-#endif
 
 #endif /* _ASM_X86_PROCESSOR_H */

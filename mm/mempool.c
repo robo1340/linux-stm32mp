@@ -17,6 +17,7 @@
 #include <linux/kmemleak.h>
 #include <linux/export.h>
 #include <linux/mempool.h>
+#include <linux/blkdev.h>
 #include <linux/writeback.h>
 #include "slab.h"
 
@@ -379,7 +380,7 @@ void *mempool_alloc(mempool_t *pool, gfp_t gfp_mask)
 	gfp_t gfp_temp;
 
 	VM_WARN_ON_ONCE(gfp_mask & __GFP_ZERO);
-	might_alloc(gfp_mask);
+	might_sleep_if(gfp_mask & __GFP_DIRECT_RECLAIM);
 
 	gfp_mask |= __GFP_NOMEMALLOC;	/* don't allocate emergency reserves */
 	gfp_mask |= __GFP_NORETRY;	/* don't loop in __alloc_pages */

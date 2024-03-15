@@ -44,6 +44,7 @@
 #define hcd_to_ehci_priv(h) ((struct ehci_platform_priv *)hcd_to_ehci(h)->priv)
 
 #define BCM_USB_FIFO_THRESHOLD	0x00800040
+#define bcm_iproc_insnreg01	hostpc[0]
 
 struct ehci_platform_priv {
 	struct clk *clks[EHCI_MAX_CLKS];
@@ -53,6 +54,8 @@ struct ehci_platform_priv {
 	struct timer_list poll_timer;
 	struct delayed_work poll_work;
 };
+
+static const char hcd_name[] = "ehci-platform";
 
 static int ehci_platform_reset(struct usb_hcd *hcd)
 {
@@ -79,7 +82,7 @@ static int ehci_platform_reset(struct usb_hcd *hcd)
 
 	if (of_device_is_compatible(pdev->dev.of_node, "brcm,xgs-iproc-ehci"))
 		ehci_writel(ehci, BCM_USB_FIFO_THRESHOLD,
-			    &ehci->regs->brcm_insnreg[1]);
+			    &ehci->regs->bcm_iproc_insnreg01);
 
 	return 0;
 }
@@ -369,8 +372,6 @@ static int ehci_platform_probe(struct platform_device *dev)
 	hcd->rsrc_start = res_mem->start;
 	hcd->rsrc_len = resource_size(res_mem);
 
-	hcd->tpl_support = of_usb_host_tpl_support(dev->dev.of_node);
-
 	err = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (err)
 		goto err_power;
@@ -530,7 +531,6 @@ static struct platform_driver ehci_platform_driver = {
 		.pm	= pm_ptr(&ehci_platform_pm_ops),
 		.of_match_table = vt8500_ehci_ids,
 		.acpi_match_table = ACPI_PTR(ehci_acpi_match),
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	}
 };
 
@@ -538,6 +538,8 @@ static int __init ehci_platform_init(void)
 {
 	if (usb_disabled())
 		return -ENODEV;
+
+	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 
 	ehci_init_driver(&ehci_platform_hc_driver, &platform_overrides);
 	return platform_driver_register(&ehci_platform_driver);

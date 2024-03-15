@@ -17,7 +17,7 @@ description: |
      - simple counter from IN1 input signal.
 
 maintainers:
-  - Fabrice Gasnier <fabrice.gasnier@foss.st.com>
+  - Fabrice Gasnier <fabrice.gasnier@st.com>
 
 properties:
   compatible:
@@ -49,7 +49,6 @@ properties:
 
   pwm:
     type: object
-    additionalProperties: false
 
     properties:
       compatible:
@@ -62,32 +61,9 @@ properties:
       - "#pwm-cells"
       - compatible
 
-  counter:
-    type: object
-    additionalProperties: false
-
-    properties:
-      compatible:
-        const: st,stm32-lptimer-counter
-
-    required:
-      - compatible
-
-  timer:
-    type: object
-    additionalProperties: false
-
-    properties:
-      compatible:
-        const: st,stm32-lptimer-timer
-
-    required:
-      - compatible
-
 patternProperties:
   "^trigger@[0-9]+$":
     type: object
-    additionalProperties: false
 
     properties:
       compatible:
@@ -102,6 +78,26 @@ patternProperties:
     required:
       - compatible
       - reg
+
+  counter:
+    type: object
+
+    properties:
+      compatible:
+        const: st,stm32-lptimer-counter
+
+    required:
+      - compatible
+
+  timer:
+    type: object
+
+    properties:
+      compatible:
+        const: st,stm32-lptimer-timer
+
+    required:
+      - compatible
 
 required:
   - "#address-cells"

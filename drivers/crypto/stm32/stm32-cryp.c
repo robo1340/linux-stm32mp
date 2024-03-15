@@ -130,6 +130,7 @@ static const struct debugfs_reg32 stm32_cryp_regs[] = {
 #define GCM_CTR_INIT            2
 #define CRYP_AUTOSUSPEND_DELAY  50
 
+#define CRYP_DMA_BURST_MEM      16
 #define CRYP_DMA_BURST_REG      4
 
 enum stm32_dma_mode {
@@ -294,16 +295,16 @@ static inline int stm32_cryp_wait_input(struct stm32_cryp *cryp)
 {
 	u32 status;
 
-	return readl_relaxed_poll_timeout_atomic(cryp->regs + CRYP_SR, status,
-			status & SR_IFNF, 1, 10);
+	return readl_relaxed_poll_timeout(cryp->regs + CRYP_SR, status,
+			status & SR_IFNF, 10, 100000);
 }
 
 static inline int stm32_cryp_wait_output(struct stm32_cryp *cryp)
 {
 	u32 status;
 
-	return readl_relaxed_poll_timeout_atomic(cryp->regs + CRYP_SR, status,
-			status & SR_OFNE, 1, 10);
+	return readl_relaxed_poll_timeout(cryp->regs + CRYP_SR, status,
+			status & SR_OFNE, 10, 100000);
 }
 
 static void stm32_cryp_irq_read_data(struct stm32_cryp *cryp);
@@ -1323,7 +1324,7 @@ static enum stm32_dma_mode stm32_cryp_dma_check(struct stm32_cryp *cryp, struct 
 	return ret;
 }
 
-static int stm32_cryp_truncate_sg(struct scatterlist **new_sg, size_t *new_sg_len,
+static int stm32_cryp_truncate_sg(struct scatterlist **new_sg, int *new_sg_len,
 				  struct scatterlist *sg, off_t skip, size_t size)
 {
 	struct scatterlist *cur;
@@ -2093,6 +2094,7 @@ static int stm32_cryp_dma_init(struct stm32_cryp *cryp)
 	dma_conf.direction = DMA_MEM_TO_DEV;
 	dma_conf.dst_addr = cryp->phys_base + CRYP_DIN;
 	dma_conf.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	dma_conf.src_maxburst = CRYP_DMA_BURST_MEM;
 	dma_conf.dst_maxburst = CRYP_DMA_BURST_REG;
 	dma_conf.device_fc = false;
 
@@ -2115,6 +2117,7 @@ static int stm32_cryp_dma_init(struct stm32_cryp *cryp)
 	dma_conf.src_addr = cryp->phys_base + CRYP_DOUT;
 	dma_conf.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 	dma_conf.src_maxburst = CRYP_DMA_BURST_REG;
+	dma_conf.dst_maxburst = CRYP_DMA_BURST_MEM;
 	dma_conf.device_fc = false;
 
 	chan = dma_request_chan(cryp->dev, "out");

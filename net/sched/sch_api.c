@@ -171,7 +171,7 @@ out_einval:
 }
 EXPORT_SYMBOL(register_qdisc);
 
-void unregister_qdisc(struct Qdisc_ops *qops)
+int unregister_qdisc(struct Qdisc_ops *qops)
 {
 	struct Qdisc_ops *q, **qp;
 	int err = -ENOENT;
@@ -186,8 +186,7 @@ void unregister_qdisc(struct Qdisc_ops *qops)
 		err = 0;
 	}
 	write_unlock(&qdisc_mod_lock);
-
-	WARN(err, "unregister qdisc(%s) failed\n", qops->id);
+	return err;
 }
 EXPORT_SYMBOL(unregister_qdisc);
 
@@ -195,7 +194,7 @@ EXPORT_SYMBOL(unregister_qdisc);
 void qdisc_get_default(char *name, size_t len)
 {
 	read_lock(&qdisc_mod_lock);
-	strscpy(name, default_qdisc_ops->id, len);
+	strlcpy(name, default_qdisc_ops->id, len);
 	read_unlock(&qdisc_mod_lock);
 }
 
@@ -508,8 +507,7 @@ static struct qdisc_size_table *qdisc_get_stab(struct nlattr *opt,
 	list_for_each_entry(stab, &qdisc_stab_list, list) {
 		if (memcmp(&stab->szopts, s, sizeof(*s)))
 			continue;
-		if (tsize > 0 &&
-		    memcmp(stab->data, tab, flex_array_size(stab, data, tsize)))
+		if (tsize > 0 && memcmp(stab->data, tab, tsize * sizeof(u16)))
 			continue;
 		stab->refcnt++;
 		return stab;
@@ -521,14 +519,14 @@ static struct qdisc_size_table *qdisc_get_stab(struct nlattr *opt,
 		return ERR_PTR(-EINVAL);
 	}
 
-	stab = kmalloc(struct_size(stab, data, tsize), GFP_KERNEL);
+	stab = kmalloc(sizeof(*stab) + tsize * sizeof(u16), GFP_KERNEL);
 	if (!stab)
 		return ERR_PTR(-ENOMEM);
 
 	stab->refcnt = 1;
 	stab->szopts = *s;
 	if (tsize > 0)
-		memcpy(stab->data, tab, flex_array_size(stab, data, tsize));
+		memcpy(stab->data, tab, tsize * sizeof(u16));
 
 	list_add_tail(&stab->list, &qdisc_stab_list);
 
@@ -868,23 +866,6 @@ void qdisc_offload_graft_helper(struct net_device *dev, struct Qdisc *sch,
 }
 EXPORT_SYMBOL(qdisc_offload_graft_helper);
 
-void qdisc_offload_query_caps(struct net_device *dev,
-			      enum tc_setup_type type,
-			      void *caps, size_t caps_len)
-{
-	const struct net_device_ops *ops = dev->netdev_ops;
-	struct tc_query_caps_base base = {
-		.type = type,
-		.caps = caps,
-	};
-
-	memset(caps, 0, caps_len);
-
-	if (ops->ndo_setup_tc)
-		ops->ndo_setup_tc(dev, TC_QUERY_CAPS, &base);
-}
-EXPORT_SYMBOL(qdisc_offload_query_caps);
-
 static void qdisc_offload_graft_root(struct net_device *dev,
 				     struct Qdisc *new, struct Qdisc *old,
 				     struct netlink_ext_ack *extack)
@@ -903,7 +884,7 @@ static void qdisc_offload_graft_root(struct net_device *dev,
 static int tc_fill_qdisc(struct sk_buff *skb, struct Qdisc *q, u32 clid,
 			 u32 portid, u32 seq, u16 flags, int event)
 {
-	struct gnet_stats_basic_sync __percpu *cpu_bstats = NULL;
+	struct gnet_stats_basic_cpu __percpu *cpu_bstats = NULL;
 	struct gnet_stats_queue __percpu *cpu_qstats = NULL;
 	struct tcmsg *tcm;
 	struct nlmsghdr  *nlh;
@@ -961,7 +942,8 @@ static int tc_fill_qdisc(struct sk_buff *skb, struct Qdisc *q, u32 clid,
 		cpu_qstats = q->cpu_qstats;
 	}
 
-	if (gnet_stats_copy_basic(&d, cpu_bstats, &q->bstats, true) < 0 ||
+	if (gnet_stats_copy_basic(qdisc_root_sleeping_running(q),
+				  &d, cpu_bstats, &q->bstats) < 0 ||
 	    gnet_stats_copy_rate_est(&d, &q->rate_est) < 0 ||
 	    gnet_stats_copy_queue(&d, cpu_qstats, &q->qstats, qlen) < 0)
 		goto nla_put_failure;
@@ -1099,12 +1081,11 @@ static int qdisc_graft(struct net_device *dev, struct Qdisc *parent,
 
 skip:
 		if (!ingress) {
-			old = rtnl_dereference(dev->qdisc);
+			notify_and_destroy(net, skb, n, classid,
+					   rtnl_dereference(dev->qdisc), new);
 			if (new && !new->ops->attach)
 				qdisc_refcount_inc(new);
 			rcu_assign_pointer(dev->qdisc, new ? : &noop_qdisc);
-
-			notify_and_destroy(net, skb, n, classid, old, new);
 
 			if (new && new->ops->attach)
 				new->ops->attach(new);
@@ -1130,11 +1111,6 @@ skip:
 		if (!cl) {
 			NL_SET_ERR_MSG(extack, "Specified class not found");
 			return -ENOENT;
-		}
-
-		if (new && new->ops == &noqueue_qdisc_ops) {
-			NL_SET_ERR_MSG(extack, "Cannot assign noqueue to a class");
-			return -EINVAL;
 		}
 
 		err = cops->graft(parent, cl, new, &old, extack);
@@ -1187,7 +1163,7 @@ static int qdisc_block_indexes_set(struct Qdisc *sch, struct nlattr **tca,
 
 static struct Qdisc *qdisc_create(struct net_device *dev,
 				  struct netdev_queue *dev_queue,
-				  u32 parent, u32 handle,
+				  struct Qdisc *p, u32 parent, u32 handle,
 				  struct nlattr **tca, int *errp,
 				  struct netlink_ext_ack *extack)
 {
@@ -1288,17 +1264,26 @@ static struct Qdisc *qdisc_create(struct net_device *dev,
 		rcu_assign_pointer(sch->stab, stab);
 	}
 	if (tca[TCA_RATE]) {
+		seqcount_t *running;
+
 		err = -EOPNOTSUPP;
 		if (sch->flags & TCQ_F_MQROOT) {
 			NL_SET_ERR_MSG(extack, "Cannot attach rate estimator to a multi-queue root qdisc");
 			goto err_out4;
 		}
 
+		if (sch->parent != TC_H_ROOT &&
+		    !(sch->flags & TCQ_F_INGRESS) &&
+		    (!p || !(p->flags & TCQ_F_MQROOT)))
+			running = qdisc_root_sleeping_running(sch);
+		else
+			running = &sch->running;
+
 		err = gen_new_estimator(&sch->bstats,
 					sch->cpu_bstats,
 					&sch->rate_est,
 					NULL,
-					true,
+					running,
 					tca[TCA_RATE]);
 		if (err) {
 			NL_SET_ERR_MSG(extack, "Failed to generate new estimator");
@@ -1316,7 +1301,7 @@ err_out5:
 	if (ops->destroy)
 		ops->destroy(sch);
 err_out3:
-	netdev_put(dev, &sch->dev_tracker);
+	dev_put(dev);
 	qdisc_free(sch);
 err_out2:
 	module_put(ops->owner);
@@ -1374,7 +1359,7 @@ static int qdisc_change(struct Qdisc *sch, struct nlattr **tca,
 				      sch->cpu_bstats,
 				      &sch->rate_est,
 				      NULL,
-				      true,
+				      qdisc_root_sleeping_running(sch),
 				      tca[TCA_RATE]);
 	}
 out:
@@ -1447,6 +1432,10 @@ static int tc_get_qdisc(struct sk_buff *skb, struct nlmsghdr *n,
 	struct Qdisc *q = NULL;
 	struct Qdisc *p = NULL;
 	int err;
+
+	if ((n->nlmsg_type != RTM_GETQDISC) &&
+	    !netlink_ns_capable(skb, net->user_ns, CAP_NET_ADMIN))
+		return -EPERM;
 
 	err = nlmsg_parse_deprecated(n, sizeof(*tcm), tca, TCA_MAX,
 				     rtm_tca_policy, extack);
@@ -1527,6 +1516,9 @@ static int tc_modify_qdisc(struct sk_buff *skb, struct nlmsghdr *n,
 	u32 clid;
 	struct Qdisc *q, *p;
 	int err;
+
+	if (!netlink_ns_capable(skb, net->user_ns, CAP_NET_ADMIN))
+		return -EPERM;
 
 replay:
 	/* Reinit, just in case something touches this. */
@@ -1657,7 +1649,7 @@ create_n_graft:
 	}
 	if (clid == TC_H_INGRESS) {
 		if (dev_ingress_queue(dev)) {
-			q = qdisc_create(dev, dev_ingress_queue(dev),
+			q = qdisc_create(dev, dev_ingress_queue(dev), p,
 					 tcm->tcm_parent, tcm->tcm_parent,
 					 tca, &err, extack);
 		} else {
@@ -1674,7 +1666,7 @@ create_n_graft:
 		else
 			dev_queue = netdev_get_tx_queue(dev, 0);
 
-		q = qdisc_create(dev, dev_queue,
+		q = qdisc_create(dev, dev_queue, p,
 				 tcm->tcm_parent, tcm->tcm_handle,
 				 tca, &err, extack);
 	}
@@ -1921,7 +1913,7 @@ static int tcf_node_bind(struct tcf_proto *tp, void *n, struct tcf_walker *arg)
 {
 	struct tcf_bind_args *a = (void *)arg;
 
-	if (n && tp->ops->bind_class) {
+	if (tp->ops->bind_class) {
 		struct Qdisc *q = tcf_block_q(tp->chain->block);
 
 		sch_tree_lock(q);
@@ -2008,6 +2000,10 @@ static int tc_ctl_tclass(struct sk_buff *skb, struct nlmsghdr *n,
 	u32 clid;
 	u32 qid;
 	int err;
+
+	if ((n->nlmsg_type != RTM_GETTCLASS) &&
+	    !netlink_ns_capable(skb, net->user_ns, CAP_NET_ADMIN))
+		return -EPERM;
 
 	err = nlmsg_parse_deprecated(n, sizeof(*tcm), tca, TCA_MAX,
 				     rtm_tca_policy, extack);

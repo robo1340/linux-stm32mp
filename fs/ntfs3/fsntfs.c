@@ -703,14 +703,12 @@ out:
 
 /*
  * ntfs_mark_rec_free - Mark record as free.
- * is_mft - true if we are changing MFT
  */
-void ntfs_mark_rec_free(struct ntfs_sb_info *sbi, CLST rno, bool is_mft)
+void ntfs_mark_rec_free(struct ntfs_sb_info *sbi, CLST rno)
 {
 	struct wnd_bitmap *wnd = &sbi->mft.bitmap;
 
-	if (!is_mft)
-		down_write_nested(&wnd->rw_lock, BITMAP_MUTEX_MFT);
+	down_write_nested(&wnd->rw_lock, BITMAP_MUTEX_MFT);
 	if (rno >= wnd->nbits)
 		goto out;
 
@@ -729,8 +727,7 @@ void ntfs_mark_rec_free(struct ntfs_sb_info *sbi, CLST rno, bool is_mft)
 		sbi->mft.next_free = rno;
 
 out:
-	if (!is_mft)
-		up_write(&wnd->rw_lock);
+	up_write(&wnd->rw_lock);
 }
 
 /*
@@ -783,7 +780,7 @@ out:
  */
 int ntfs_refresh_zone(struct ntfs_sb_info *sbi)
 {
-	CLST lcn, vcn, len;
+	CLST zone_limit, zone_max, lcn, vcn, len;
 	size_t lcn_s, zlen;
 	struct wnd_bitmap *wnd = &sbi->used.bitmap;
 	struct ntfs_inode *ni = sbi->mft.ni;
@@ -791,6 +788,16 @@ int ntfs_refresh_zone(struct ntfs_sb_info *sbi)
 	/* Do not change anything unless we have non empty MFT zone. */
 	if (wnd_zone_len(wnd))
 		return 0;
+
+	/*
+	 * Compute the MFT zone at two steps.
+	 * It would be nice if we are able to allocate 1/8 of
+	 * total clusters for MFT but not more then 512 MB.
+	 */
+	zone_limit = (512 * 1024 * 1024) >> sbi->cluster_bits;
+	zone_max = wnd->nbits >> 3;
+	if (zone_max > zone_limit)
+		zone_max = zone_limit;
 
 	vcn = bytes_to_cluster(sbi,
 			       (u64)sbi->mft.bitmap.nbits << sbi->record_bits);
@@ -805,7 +812,13 @@ int ntfs_refresh_zone(struct ntfs_sb_info *sbi)
 	lcn_s = lcn + 1;
 
 	/* Try to allocate clusters after last MFT run. */
-	zlen = wnd_find(wnd, sbi->zone_max, lcn_s, 0, &lcn_s);
+	zlen = wnd_find(wnd, zone_max, lcn_s, 0, &lcn_s);
+	if (!zlen) {
+		ntfs_notice(sbi->sb, "MftZone: unavailable");
+		return 0;
+	}
+
+	/* Truncate too large zone. */
 	wnd_zone_set(wnd, lcn_s, zlen);
 
 	return 0;
@@ -814,7 +827,7 @@ int ntfs_refresh_zone(struct ntfs_sb_info *sbi)
 /*
  * ntfs_update_mftmirr - Update $MFTMirr data.
  */
-void ntfs_update_mftmirr(struct ntfs_sb_info *sbi, int wait)
+int ntfs_update_mftmirr(struct ntfs_sb_info *sbi, int wait)
 {
 	int err;
 	struct super_block *sb = sbi->sb;
@@ -823,12 +836,12 @@ void ntfs_update_mftmirr(struct ntfs_sb_info *sbi, int wait)
 	u32 bytes;
 
 	if (!sb)
-		return;
+		return -EINVAL;
 
 	blocksize = sb->s_blocksize;
 
 	if (!(sbi->flags & NTFS_FLAGS_MFTMIRR))
-		return;
+		return 0;
 
 	err = 0;
 	bytes = sbi->mft.recs_mirr << sbi->record_bits;
@@ -839,13 +852,16 @@ void ntfs_update_mftmirr(struct ntfs_sb_info *sbi, int wait)
 		struct buffer_head *bh1, *bh2;
 
 		bh1 = sb_bread(sb, block1++);
-		if (!bh1)
-			return;
+		if (!bh1) {
+			err = -EIO;
+			goto out;
+		}
 
 		bh2 = sb_getblk(sb, block2++);
 		if (!bh2) {
 			put_bh(bh1);
-			return;
+			err = -EIO;
+			goto out;
 		}
 
 		if (buffer_locked(bh2))
@@ -865,24 +881,13 @@ void ntfs_update_mftmirr(struct ntfs_sb_info *sbi, int wait)
 
 		put_bh(bh2);
 		if (err)
-			return;
+			goto out;
 	}
 
 	sbi->flags &= ~NTFS_FLAGS_MFTMIRR;
-}
 
-/*
- * ntfs_bad_inode
- *
- * Marks inode as bad and marks fs as 'dirty'
- */
-void ntfs_bad_inode(struct inode *inode, const char *hint)
-{
-	struct ntfs_sb_info *sbi = inode->i_sb->s_fs_info;
-
-	ntfs_inode_err(inode, "%s", hint);
-	make_bad_inode(inode);
-	ntfs_set_state(sbi, NTFS_DIRTY_ERROR);
+out:
+	return err;
 }
 
 /*
@@ -1395,7 +1400,7 @@ int ntfs_write_bh(struct ntfs_sb_info *sbi, struct NTFS_RECORD_HEADER *rhdr,
 		if (buffer_locked(bh))
 			__wait_on_buffer(bh);
 
-		lock_buffer(bh);
+		lock_buffer(nb->bh[idx]);
 
 		bh_data = bh->b_data + off;
 		end_data = Add2Ptr(bh_data, op);
@@ -1443,12 +1448,23 @@ int ntfs_write_bh(struct ntfs_sb_info *sbi, struct NTFS_RECORD_HEADER *rhdr,
 	return err;
 }
 
+static inline struct bio *ntfs_alloc_bio(u32 nr_vecs)
+{
+	struct bio *bio = bio_alloc(GFP_NOFS | __GFP_HIGH, nr_vecs);
+
+	if (!bio && (current->flags & PF_MEMALLOC)) {
+		while (!bio && (nr_vecs /= 2))
+			bio = bio_alloc(GFP_NOFS | __GFP_HIGH, nr_vecs);
+	}
+	return bio;
+}
+
 /*
  * ntfs_bio_pages - Read/write pages from/to disk.
  */
 int ntfs_bio_pages(struct ntfs_sb_info *sbi, const struct runs_tree *run,
 		   struct page **pages, u32 nr_pages, u64 vbo, u32 bytes,
-		   enum req_op op)
+		   u32 op)
 {
 	int err = 0;
 	struct bio *new, *bio = NULL;
@@ -1485,13 +1501,19 @@ int ntfs_bio_pages(struct ntfs_sb_info *sbi, const struct runs_tree *run,
 		lbo = ((u64)lcn << cluster_bits) + off;
 		len = ((u64)clen << cluster_bits) - off;
 new_bio:
-		new = bio_alloc(bdev, nr_pages - page_idx, op, GFP_NOFS);
+		new = ntfs_alloc_bio(nr_pages - page_idx);
+		if (!new) {
+			err = -ENOMEM;
+			goto out;
+		}
 		if (bio) {
 			bio_chain(bio, new);
 			submit_bio(bio);
 		}
 		bio = new;
+		bio_set_dev(bio, bdev);
 		bio->bi_iter.bi_sector = lbo >> 9;
+		bio->bi_opf = op;
 
 		while (len) {
 			off = vbo & (PAGE_SIZE - 1);
@@ -1582,12 +1604,18 @@ int ntfs_bio_fill_1(struct ntfs_sb_info *sbi, const struct runs_tree *run)
 		lbo = (u64)lcn << cluster_bits;
 		len = (u64)clen << cluster_bits;
 new_bio:
-		new = bio_alloc(bdev, BIO_MAX_VECS, REQ_OP_WRITE, GFP_NOFS);
+		new = ntfs_alloc_bio(BIO_MAX_VECS);
+		if (!new) {
+			err = -ENOMEM;
+			break;
+		}
 		if (bio) {
 			bio_chain(bio, new);
 			submit_bio(bio);
 		}
 		bio = new;
+		bio_set_dev(bio, bdev);
+		bio->bi_opf = REQ_OP_WRITE;
 		bio->bi_iter.bi_sector = lbo >> 9;
 
 		for (;;) {
@@ -1603,10 +1631,11 @@ new_bio:
 		}
 	} while (run_get_entry(run, ++run_idx, NULL, &lcn, &clen));
 
-	if (!err)
-		err = submit_bio_wait(bio);
-	bio_put(bio);
-
+	if (bio) {
+		if (!err)
+			err = submit_bio_wait(bio);
+		bio_put(bio);
+	}
 	blk_finish_plug(&plug);
 out:
 	unlock_page(fill);
@@ -1849,10 +1878,9 @@ int ntfs_security_init(struct ntfs_sb_info *sbi)
 		goto out;
 	}
 
-	root_sdh = resident_data_ex(attr, sizeof(struct INDEX_ROOT));
+	root_sdh = resident_data(attr);
 	if (root_sdh->type != ATTR_ZERO ||
-	    root_sdh->rule != NTFS_COLLATION_TYPE_SECURITY_HASH ||
-	    offsetof(struct INDEX_ROOT, ihdr) + root_sdh->ihdr.used > attr->res.data_size) {
+	    root_sdh->rule != NTFS_COLLATION_TYPE_SECURITY_HASH) {
 		err = -EINVAL;
 		goto out;
 	}
@@ -1868,10 +1896,9 @@ int ntfs_security_init(struct ntfs_sb_info *sbi)
 		goto out;
 	}
 
-	root_sii = resident_data_ex(attr, sizeof(struct INDEX_ROOT));
+	root_sii = resident_data(attr);
 	if (root_sii->type != ATTR_ZERO ||
-	    root_sii->rule != NTFS_COLLATION_TYPE_UINT ||
-	    offsetof(struct INDEX_ROOT, ihdr) + root_sii->ihdr.used > attr->res.data_size) {
+	    root_sii->rule != NTFS_COLLATION_TYPE_UINT) {
 		err = -EINVAL;
 		goto out;
 	}
@@ -2426,7 +2453,7 @@ static inline void ntfs_unmap_and_discard(struct ntfs_sb_info *sbi, CLST lcn,
 
 void mark_as_free_ex(struct ntfs_sb_info *sbi, CLST lcn, CLST len, bool trim)
 {
-	CLST end, i, zone_len, zlen;
+	CLST end, i;
 	struct wnd_bitmap *wnd = &sbi->used.bitmap;
 
 	down_write_nested(&wnd->rw_lock, BITMAP_MUTEX_CLUSTERS);
@@ -2460,28 +2487,6 @@ void mark_as_free_ex(struct ntfs_sb_info *sbi, CLST lcn, CLST len, bool trim)
 	if (trim)
 		ntfs_unmap_and_discard(sbi, lcn, len);
 	wnd_set_free(wnd, lcn, len);
-
-	/* append to MFT zone, if possible. */
-	zone_len = wnd_zone_len(wnd);
-	zlen = min(zone_len + len, sbi->zone_max);
-
-	if (zlen == zone_len) {
-		/* MFT zone already has maximum size. */
-	} else if (!zone_len) {
-		/* Create MFT zone only if 'zlen' is large enough. */
-		if (zlen == sbi->zone_max)
-			wnd_zone_set(wnd, lcn, zlen);
-	} else {
-		CLST zone_lcn = wnd_zone_bit(wnd);
-
-		if (lcn + len == zone_lcn) {
-			/* Append into head MFT zone. */
-			wnd_zone_set(wnd, lcn, zlen);
-		} else if (zone_lcn + zone_len == lcn) {
-			/* Append into tail MFT zone. */
-			wnd_zone_set(wnd, zone_lcn, zlen);
-		}
-	}
 
 out:
 	up_write(&wnd->rw_lock);

@@ -44,9 +44,9 @@
 
 /*
  * return the address of the resource table, or 0 if not found
- * No check is done to verify that the address returned is accessible by
+ * No chech is done to verify that the address returned is accessible by
  * the non secure context. If the resource table is loaded in a protected
- * memory the access by the non secure context will lead to a data abort.
+ * memory the acces by the non secure context will lead to a data abort.
  *
  * [in]  params[0].value.a:	unique 32bit identifier of the firmware
  * [out]  params[1].value.a:	32bit LSB resource table memory address
@@ -105,7 +105,17 @@ int tee_rproc_load_fw(struct tee_rproc *trproc, const struct firmware *fw)
 	struct tee_shm *fw_shm;
 	int ret;
 
-	fw_shm = tee_shm_register_kernel_buf(pvt_data.ctx, (void *)fw->data, fw->size);
+	/*
+	 * useless copy waiting that tee_shm_register and tee well support
+	 * kernel buffers registration
+	 */
+
+	fw_shm = tee_shm_alloc(pvt_data.ctx, fw->size,
+			       TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
+	if (IS_ERR(fw_shm))
+		return PTR_ERR(fw_shm);
+
+	memcpy(tee_shm_get_va(fw_shm, 0), fw->data, fw->size);
 
 	prepare_args(trproc, TA_RPROC_FW_CMD_LOAD_FW, &arg, param, 1);
 
@@ -365,4 +375,4 @@ module_exit(tee_rproc_fw_mod_exit);
 
 MODULE_DESCRIPTION("secure remote processor control driver");
 MODULE_AUTHOR("Arnaud Pouliquen <arnaud.pouliquen@st.com>");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

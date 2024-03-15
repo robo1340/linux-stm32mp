@@ -479,15 +479,10 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 		 * the previous entry, search for a matching entry.
 		 */
 		if (!m || start < m->addr || start >= m->addr + m->size) {
-			struct kcore_list *iter;
-
-			m = NULL;
-			list_for_each_entry(iter, &kclist_head, list) {
-				if (start >= iter->addr &&
-				    start < iter->addr + iter->size) {
-					m = iter;
+			list_for_each_entry(m, &kclist_head, list) {
+				if (start >= m->addr &&
+				    start < m->addr + m->size)
 					break;
-				}
 			}
 		}
 
@@ -497,11 +492,12 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 			page_offline_freeze();
 		}
 
-		if (!m) {
+		if (&m->list == &kclist_head) {
 			if (clear_user(buffer, tsz)) {
 				ret = -EFAULT;
 				goto out;
 			}
+			m = NULL;	/* skip the list anchor */
 			goto skip;
 		}
 

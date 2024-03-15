@@ -270,7 +270,6 @@ static struct variant_data variant_stm32_sdmmc = {
 	.datactrl_any_blocksz	= true,
 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
 	.stm32_idmabsize_mask	= GENMASK(12, 5),
-	.use_sdio_irq		= true,
 	.busy_timeout		= true,
 	.busy_detect		= true,
 	.busy_detect_flag	= MCI_STM32_BUSYD0,
@@ -297,7 +296,6 @@ static struct variant_data variant_stm32_sdmmcv2 = {
 	.datactrl_any_blocksz	= true,
 	.datactrl_mask_sdio	= MCI_DPSM_ST_SDIOEN,
 	.stm32_idmabsize_mask	= GENMASK(16, 5),
-	.use_sdio_irq		= true,
 	.dma_lli		= true,
 	.busy_timeout		= true,
 	.busy_detect		= true,
@@ -393,10 +391,6 @@ static void mmci_write_datactrlreg(struct mmci_host *host, u32 datactrl)
 {
 	/* Keep busy mode in DPSM if enabled */
 	datactrl |= host->datactrl_reg & host->variant->busy_dpsm_flag;
-
-	/* Keep SD I/O interrupt mode enabled */
-	if (host->variant->use_sdio_irq && host->mmc->caps & MMC_CAP_SDIO_IRQ)
-		datactrl |= host->variant->datactrl_mask_sdio;
 
 	if (host->datactrl_reg != datactrl) {
 		host->datactrl_reg = datactrl;
@@ -768,7 +762,7 @@ int mmci_dmae_setup(struct mmci_host *host)
 
 	/*
 	 * If only an RX channel is specified, the driver will
-	 * attempt to use it bidirectionally, however if it
+	 * attempt to use it bidirectionally, however if it is
 	 * is specified but cannot be located, DMA will be disabled.
 	 */
 	if (dmae->rx_channel && !dmae->tx_channel)
@@ -1400,10 +1394,6 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 	} else if (host->variant->busy_timeout && busy_resp &&
 		   status & MCI_DATATIMEOUT) {
 		cmd->error = -ETIMEDOUT;
-		/*
-		 * This will wake up mmci_irq_thread() which will issue
-		 * a hardware reset of the MMCI block.
-		 */
 		host->irq_action = IRQ_WAKE_THREAD;
 	} else {
 		cmd->resp[0] = readl(base + MMCIRESPONSE0);
@@ -1625,8 +1615,6 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 
 	do {
 		status = readl(host->base + MMCISTATUS);
-		if (!status)
-			break;
 
 		if (host->singleirq) {
 			if (status & host->mask1_reg)
@@ -1655,11 +1643,6 @@ static irqreturn_t mmci_irq(int irq, void *dev_id)
 			mmci_cmd_irq(host, host->cmd, status);
 			mmci_data_irq(host, host->data, status);
 		}
-
-		if (host->variant->use_sdio_irq &&
-		    host->mmc->caps & MMC_CAP_SDIO_IRQ &&
-		    host->ops && host->ops->sdio_irq)
-			host->ops->sdio_irq(host, status);
 
 		/*
 		 * Busy detection has been handled by mmci_cmd_irq() above.
@@ -1746,8 +1729,7 @@ static void mmci_set_max_busy_timeout(struct mmc_host *mmc)
 		return;
 
 	if (host->variant->busy_timeout && mmc->actual_clock)
-		max_busy_timeout = U32_MAX / DIV_ROUND_UP(mmc->actual_clock,
-							  MSEC_PER_SEC);
+		max_busy_timeout = ~0UL / (mmc->actual_clock / MSEC_PER_SEC);
 
 	mmc->max_busy_timeout = max_busy_timeout;
 }
@@ -1759,6 +1741,10 @@ static void mmci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	u32 pwr = 0;
 	unsigned long flags;
 	int ret;
+
+	if (host->plat->ios_handler &&
+		host->plat->ios_handler(mmc_dev(mmc), ios))
+			dev_err(mmc_dev(mmc), "platform ios_handler failed\n");
 
 	switch (ios->power_mode) {
 	case MMC_POWER_OFF:
@@ -1897,45 +1883,6 @@ static int mmci_sig_volt_switch(struct mmc_host *mmc, struct mmc_ios *ios)
 	return ret;
 }
 
-static void mmci_enable_sdio_irq(struct mmc_host *mmc, int enable)
-{
-	struct mmci_host *host = mmc_priv(mmc);
-	unsigned long flags;
-
-	if (!host->variant->use_sdio_irq)
-		return;
-
-	if (host->ops && host->ops->enable_sdio_irq) {
-		if (enable)
-			/* Keep device active while SDIO IRQ is enabled */
-			pm_runtime_get_sync(mmc_dev(mmc));
-
-		spin_lock_irqsave(&host->lock, flags);
-		host->ops->enable_sdio_irq(host, enable);
-		spin_unlock_irqrestore(&host->lock, flags);
-
-		if (!enable) {
-			pm_runtime_mark_last_busy(mmc_dev(mmc));
-			pm_runtime_put_autosuspend(mmc_dev(mmc));
-		}
-	}
-}
-
-static void mmci_ack_sdio_irq(struct mmc_host *mmc)
-{
-	struct mmci_host *host = mmc_priv(mmc);
-	unsigned long flags;
-
-	if (!host->variant->use_sdio_irq)
-		return;
-
-	if (host->ops && host->ops->enable_sdio_irq) {
-		spin_lock_irqsave(&host->lock, flags);
-		host->ops->enable_sdio_irq(host, 1);
-		spin_unlock_irqrestore(&host->lock, flags);
-	}
-}
-
 static struct mmc_host_ops mmci_ops = {
 	.request	= mmci_request,
 	.pre_req	= mmci_pre_request,
@@ -1944,8 +1891,6 @@ static struct mmc_host_ops mmci_ops = {
 	.get_ro		= mmc_gpio_get_ro,
 	.get_cd		= mmci_get_cd,
 	.start_signal_voltage_switch = mmci_sig_volt_switch,
-	.enable_sdio_irq = mmci_enable_sdio_irq,
-	.ack_sdio_irq	= mmci_ack_sdio_irq,
 };
 
 static void mmci_probe_level_translator(struct mmc_host *mmc)
@@ -2213,14 +2158,6 @@ static int mmci_probe(struct amba_device *dev,
 		mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
 	}
 
-	if (variant->use_sdio_irq && host->mmc->caps & MMC_CAP_SDIO_IRQ) {
-		mmc->caps2 |= MMC_CAP2_SDIO_IRQ_NOTHREAD;
-
-		if (variant->datactrl_mask_sdio)
-			mmci_write_datactrlreg(host,
-					       host->variant->datactrl_mask_sdio);
-	}
-
 	/* Variants with mandatory busy timeout in HW needs R1B responses. */
 	if (variant->busy_timeout)
 		mmc->caps |= MMC_CAP_NEED_RSP_BUSY;
@@ -2317,9 +2254,7 @@ static int mmci_probe(struct amba_device *dev,
 	pm_runtime_set_autosuspend_delay(&dev->dev, 50);
 	pm_runtime_use_autosuspend(&dev->dev);
 
-	ret = mmc_add_host(mmc);
-	if (ret)
-		goto clk_disable;
+	mmc_add_host(mmc);
 
 	pm_runtime_put(&dev->dev);
 	return 0;

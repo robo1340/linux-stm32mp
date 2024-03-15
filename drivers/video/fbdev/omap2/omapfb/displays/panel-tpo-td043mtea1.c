@@ -517,7 +517,8 @@ static int tpo_td043_probe(struct spi_device *spi)
 
 	ddata->vcc_reg = devm_regulator_get(&spi->dev, "vcc");
 	if (IS_ERR(ddata->vcc_reg)) {
-		r = dev_err_probe(&spi->dev, r, "failed to get LCD VCC regulator\n");
+		dev_err(&spi->dev, "failed to get LCD VCC regulator\n");
+		r = PTR_ERR(ddata->vcc_reg);
 		goto err_regulator;
 	}
 
@@ -563,7 +564,7 @@ err_regulator:
 	return r;
 }
 
-static void tpo_td043_remove(struct spi_device *spi)
+static int tpo_td043_remove(struct spi_device *spi)
 {
 	struct panel_drv_data *ddata = dev_get_drvdata(&spi->dev);
 	struct omap_dss_device *dssdev = &ddata->dssdev;
@@ -579,6 +580,8 @@ static void tpo_td043_remove(struct spi_device *spi)
 	omap_dss_put_device(in);
 
 	sysfs_remove_group(&spi->dev.kobj, &tpo_td043_attr_group);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

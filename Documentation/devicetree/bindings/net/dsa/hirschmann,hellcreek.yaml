@@ -48,7 +48,7 @@ properties:
       "^led@[01]$":
         type: object
         description: Hellcreek leds
-        $ref: /schemas/leds/common.yaml#
+        $ref: ../../leds/common.yaml#
 
         properties:
           reg:
@@ -91,13 +91,8 @@ examples:
 
                 port@0 {
                     reg = <0>;
+                    label = "cpu";
                     ethernet = <&gmac0>;
-                    phy-mode = "mii";
-
-                    fixed-link {
-                        speed = <100>;
-                        full-duplex;
-                    };
                 };
 
                 port@2 {

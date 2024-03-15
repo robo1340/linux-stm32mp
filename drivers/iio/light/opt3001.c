@@ -794,7 +794,7 @@ static int opt3001_probe(struct i2c_client *client,
 	return 0;
 }
 
-static void opt3001_remove(struct i2c_client *client)
+static int opt3001_remove(struct i2c_client *client)
 {
 	struct iio_dev *iio = i2c_get_clientdata(client);
 	struct opt3001 *opt = iio_priv(iio);
@@ -808,7 +808,7 @@ static void opt3001_remove(struct i2c_client *client)
 	if (ret < 0) {
 		dev_err(opt->dev, "failed to read register %02x\n",
 				OPT3001_CONFIGURATION);
-		return;
+		return ret;
 	}
 
 	reg = ret;
@@ -819,7 +819,10 @@ static void opt3001_remove(struct i2c_client *client)
 	if (ret < 0) {
 		dev_err(opt->dev, "failed to write register %02x\n",
 				OPT3001_CONFIGURATION);
+		return ret;
 	}
+
+	return 0;
 }
 
 static const struct i2c_device_id opt3001_id[] = {

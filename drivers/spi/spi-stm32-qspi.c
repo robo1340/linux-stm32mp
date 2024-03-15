@@ -455,9 +455,11 @@ static int stm32_qspi_poll_status(struct spi_mem *mem, const struct spi_mem_op *
 	if (!spi_mem_supports_op(mem, op))
 		return -EOPNOTSUPP;
 
-	ret = pm_runtime_resume_and_get(qspi->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(qspi->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(qspi->dev);
 		return ret;
+	}
 
 	mutex_lock(&qspi->lock);
 
@@ -480,9 +482,11 @@ static int stm32_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	struct stm32_qspi *qspi = spi_controller_get_devdata(mem->spi->master);
 	int ret;
 
-	ret = pm_runtime_resume_and_get(qspi->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(qspi->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(qspi->dev);
 		return ret;
+	}
 
 	mutex_lock(&qspi->lock);
 	if (op->data.dir == SPI_MEM_DATA_IN && op->data.nbytes)
@@ -524,9 +528,11 @@ static ssize_t stm32_qspi_dirmap_read(struct spi_mem_dirmap_desc *desc,
 	u32 addr_max;
 	int ret;
 
-	ret = pm_runtime_resume_and_get(qspi->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(qspi->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(qspi->dev);
 		return ret;
+	}
 
 	mutex_lock(&qspi->lock);
 	/* make a local copy of desc op_tmpl and complete dirmap rdesc
@@ -663,9 +669,11 @@ static int stm32_qspi_setup(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	ret = pm_runtime_resume_and_get(qspi->dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(qspi->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(qspi->dev);
 		return ret;
+	}
 
 	presc = DIV_ROUND_UP(qspi->clk_rate, spi->max_speed_hz) - 1;
 
@@ -941,9 +949,11 @@ static int __maybe_unused stm32_qspi_resume(struct device *dev)
 
 	pinctrl_pm_select_default_state(dev);
 
-	ret = pm_runtime_resume_and_get(dev);
-	if (ret < 0)
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
 		return ret;
+	}
 
 	writel_relaxed(qspi->cr_reg, qspi->io_base + QSPI_CR);
 	writel_relaxed(qspi->dcr_reg, qspi->io_base + QSPI_DCR);

@@ -74,6 +74,7 @@ static long afu_ioctl_attach(struct ocxl_context *ctx,
 {
 	struct ocxl_ioctl_attach arg;
 	u64 amr = 0;
+	int rc;
 
 	pr_debug("%s for context %d\n", __func__, ctx->pasid);
 
@@ -85,7 +86,8 @@ static long afu_ioctl_attach(struct ocxl_context *ctx,
 		return -EINVAL;
 
 	amr = arg.amr & mfspr(SPRN_UAMOR);
-	return ocxl_context_attach(ctx, amr, current->mm);
+	rc = ocxl_context_attach(ctx, amr, current->mm);
+	return rc;
 }
 
 static long afu_ioctl_get_metadata(struct ocxl_context *ctx,
@@ -257,8 +259,6 @@ static long afu_ioctl(struct file *file, unsigned int cmd,
 		if (IS_ERR(ev_ctx))
 			return PTR_ERR(ev_ctx);
 		rc = ocxl_irq_set_handler(ctx, irq_id, irq_handler, irq_free, ev_ctx);
-		if (rc)
-			eventfd_ctx_put(ev_ctx);
 		break;
 
 	case OCXL_IOCTL_GET_METADATA:
@@ -541,11 +541,8 @@ int ocxl_file_register_afu(struct ocxl_afu *afu)
 		goto err_put;
 
 	rc = device_register(&info->dev);
-	if (rc) {
-		free_minor(info);
-		put_device(&info->dev);
-		return rc;
-	}
+	if (rc)
+		goto err_put;
 
 	rc = ocxl_sysfs_register_afu(info);
 	if (rc)

@@ -12,9 +12,8 @@
 #define _CRYPTO_SCATTERWALK_H
 
 #include <crypto/algapi.h>
-
 #include <linux/highmem.h>
-#include <linux/mm.h>
+#include <linux/kernel.h>
 #include <linux/scatterlist.h>
 
 static inline void scatterwalk_crypto_chain(struct scatterlist *head,
@@ -44,6 +43,12 @@ static inline void scatterwalk_advance(struct scatter_walk *walk,
 				       unsigned int nbytes)
 {
 	walk->offset += nbytes;
+}
+
+static inline unsigned int scatterwalk_aligned(struct scatter_walk *walk,
+					       unsigned int alignmask)
+{
+	return !(walk->offset & alignmask);
 }
 
 static inline struct page *scatterwalk_page(struct scatter_walk *walk)

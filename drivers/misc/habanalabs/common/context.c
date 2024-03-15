@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /*
- * Copyright 2016-2021 HabanaLabs, Ltd.
+ * Copyright 2016-2019 HabanaLabs, Ltd.
  * All Rights Reserved.
  */
 
@@ -13,13 +13,13 @@ void hl_encaps_handle_do_release(struct kref *ref)
 {
 	struct hl_cs_encaps_sig_handle *handle =
 		container_of(ref, struct hl_cs_encaps_sig_handle, refcount);
-	struct hl_encaps_signals_mgr *mgr = &handle->ctx->sig_mgr;
+	struct hl_ctx *ctx = handle->hdev->compute_ctx;
+	struct hl_encaps_signals_mgr *mgr = &ctx->sig_mgr;
 
 	spin_lock(&mgr->lock);
 	idr_remove(&mgr->handles, handle->id);
 	spin_unlock(&mgr->lock);
 
-	hl_ctx_put(handle->ctx);
 	kfree(handle);
 }
 
@@ -27,7 +27,8 @@ static void hl_encaps_handle_do_release_sob(struct kref *ref)
 {
 	struct hl_cs_encaps_sig_handle *handle =
 		container_of(ref, struct hl_cs_encaps_sig_handle, refcount);
-	struct hl_encaps_signals_mgr *mgr = &handle->ctx->sig_mgr;
+	struct hl_ctx *ctx = handle->hdev->compute_ctx;
+	struct hl_encaps_signals_mgr *mgr = &ctx->sig_mgr;
 
 	/* if we're here, then there was a signals reservation but cs with
 	 * encaps signals wasn't submitted, so need to put refcount
@@ -39,7 +40,6 @@ static void hl_encaps_handle_do_release_sob(struct kref *ref)
 	idr_remove(&mgr->handles, handle->id);
 	spin_unlock(&mgr->lock);
 
-	hl_ctx_put(handle->ctx);
 	kfree(handle);
 }
 
@@ -97,18 +97,20 @@ static void hl_ctx_fini(struct hl_ctx *ctx)
 		/* The engines are stopped as there is no executing CS, but the
 		 * Coresight might be still working by accessing addresses
 		 * related to the stopped engines. Hence stop it explicitly.
+		 * Stop only if this is the compute context, as there can be
+		 * only one compute context
 		 */
-		if (hdev->in_debug)
-			hl_device_set_debug_mode(hdev, ctx, false);
+		if ((hdev->in_debug) && (hdev->compute_ctx == ctx))
+			hl_device_set_debug_mode(hdev, false);
 
 		hdev->asic_funcs->ctx_fini(ctx);
-
-		hl_dec_ctx_fini(ctx);
-
 		hl_cb_va_pool_fini(ctx);
 		hl_vm_ctx_fini(ctx);
 		hl_asid_free(hdev, ctx->asid);
 		hl_encaps_sig_mgr_fini(hdev, &ctx->sig_mgr);
+
+		/* Scrub both SRAM and DRAM */
+		hdev->asic_funcs->scrub_device_mem(hdev, 0, 0);
 	} else {
 		dev_dbg(hdev->dev, "closing kernel context\n");
 		hdev->asic_funcs->ctx_fini(ctx);
@@ -125,22 +127,15 @@ void hl_ctx_do_release(struct kref *ref)
 
 	hl_ctx_fini(ctx);
 
-	if (ctx->hpriv) {
-		struct hl_fpriv *hpriv = ctx->hpriv;
-
-		mutex_lock(&hpriv->ctx_lock);
-		hpriv->ctx = NULL;
-		mutex_unlock(&hpriv->ctx_lock);
-
-		hl_hpriv_put(hpriv);
-	}
+	if (ctx->hpriv)
+		hl_hpriv_put(ctx->hpriv);
 
 	kfree(ctx);
 }
 
 int hl_ctx_create(struct hl_device *hdev, struct hl_fpriv *hpriv)
 {
-	struct hl_ctx_mgr *ctx_mgr = &hpriv->ctx_mgr;
+	struct hl_ctx_mgr *mgr = &hpriv->ctx_mgr;
 	struct hl_ctx *ctx;
 	int rc;
 
@@ -150,9 +145,9 @@ int hl_ctx_create(struct hl_device *hdev, struct hl_fpriv *hpriv)
 		goto out_err;
 	}
 
-	mutex_lock(&ctx_mgr->lock);
-	rc = idr_alloc(&ctx_mgr->handles, ctx, 1, 0, GFP_KERNEL);
-	mutex_unlock(&ctx_mgr->lock);
+	mutex_lock(&mgr->ctx_lock);
+	rc = idr_alloc(&mgr->ctx_handles, ctx, 1, 0, GFP_KERNEL);
+	mutex_unlock(&mgr->ctx_lock);
 
 	if (rc < 0) {
 		dev_err(hdev->dev, "Failed to allocate IDR for a new CTX\n");
@@ -172,23 +167,29 @@ int hl_ctx_create(struct hl_device *hdev, struct hl_fpriv *hpriv)
 	hpriv->ctx = ctx;
 
 	/* TODO: remove the following line for multiple process support */
-	hdev->is_compute_ctx_active = true;
+	hdev->compute_ctx = ctx;
 
 	return 0;
 
 remove_from_idr:
-	mutex_lock(&ctx_mgr->lock);
-	idr_remove(&ctx_mgr->handles, ctx->handle);
-	mutex_unlock(&ctx_mgr->lock);
+	mutex_lock(&mgr->ctx_lock);
+	idr_remove(&mgr->ctx_handles, ctx->handle);
+	mutex_unlock(&mgr->ctx_lock);
 free_ctx:
 	kfree(ctx);
 out_err:
 	return rc;
 }
 
+void hl_ctx_free(struct hl_device *hdev, struct hl_ctx *ctx)
+{
+	if (kref_put(&ctx->refcount, hl_ctx_do_release) == 1)
+		return;
+}
+
 int hl_ctx_init(struct hl_device *hdev, struct hl_ctx *ctx, bool is_kernel_ctx)
 {
-	int rc = 0, i;
+	int rc = 0;
 
 	ctx->hdev = hdev;
 
@@ -203,13 +204,6 @@ int hl_ctx_init(struct hl_device *hdev, struct hl_ctx *ctx, bool is_kernel_ctx)
 				GFP_KERNEL);
 	if (!ctx->cs_pending)
 		return -ENOMEM;
-
-	INIT_LIST_HEAD(&ctx->outcome_store.used_list);
-	INIT_LIST_HEAD(&ctx->outcome_store.free_list);
-	hash_init(ctx->outcome_store.outcome_map);
-	for (i = 0; i < ARRAY_SIZE(ctx->outcome_store.nodes_pool); ++i)
-		list_add(&ctx->outcome_store.nodes_pool[i].list_link,
-			 &ctx->outcome_store.free_list);
 
 	hl_hw_block_mem_init(ctx);
 
@@ -276,12 +270,7 @@ err_hw_block_mem_fini:
 	return rc;
 }
 
-static int hl_ctx_get_unless_zero(struct hl_ctx *ctx)
-{
-	return kref_get_unless_zero(&ctx->refcount);
-}
-
-void hl_ctx_get(struct hl_ctx *ctx)
+void hl_ctx_get(struct hl_device *hdev, struct hl_ctx *ctx)
 {
 	kref_get(&ctx->refcount);
 }
@@ -289,31 +278,6 @@ void hl_ctx_get(struct hl_ctx *ctx)
 int hl_ctx_put(struct hl_ctx *ctx)
 {
 	return kref_put(&ctx->refcount, hl_ctx_do_release);
-}
-
-struct hl_ctx *hl_get_compute_ctx(struct hl_device *hdev)
-{
-	struct hl_ctx *ctx = NULL;
-	struct hl_fpriv *hpriv;
-
-	mutex_lock(&hdev->fpriv_list_lock);
-
-	list_for_each_entry(hpriv, &hdev->fpriv_list, dev_node) {
-		mutex_lock(&hpriv->ctx_lock);
-		ctx = hpriv->ctx;
-		if (ctx && !hl_ctx_get_unless_zero(ctx))
-			ctx = NULL;
-		mutex_unlock(&hpriv->ctx_lock);
-
-		/* There can only be a single user which has opened the compute device, so exit
-		 * immediately once we find its context or if we see that it has been released
-		 */
-		break;
-	}
-
-	mutex_unlock(&hdev->fpriv_list_lock);
-
-	return ctx;
 }
 
 /*
@@ -399,37 +363,37 @@ int hl_ctx_get_fences(struct hl_ctx *ctx, u64 *seq_arr,
 /*
  * hl_ctx_mgr_init - initialize the context manager
  *
- * @ctx_mgr: pointer to context manager structure
+ * @mgr: pointer to context manager structure
  *
  * This manager is an object inside the hpriv object of the user process.
  * The function is called when a user process opens the FD.
  */
-void hl_ctx_mgr_init(struct hl_ctx_mgr *ctx_mgr)
+void hl_ctx_mgr_init(struct hl_ctx_mgr *mgr)
 {
-	mutex_init(&ctx_mgr->lock);
-	idr_init(&ctx_mgr->handles);
+	mutex_init(&mgr->ctx_lock);
+	idr_init(&mgr->ctx_handles);
 }
 
 /*
  * hl_ctx_mgr_fini - finalize the context manager
  *
  * @hdev: pointer to device structure
- * @ctx_mgr: pointer to context manager structure
+ * @mgr: pointer to context manager structure
  *
  * This function goes over all the contexts in the manager and frees them.
  * It is called when a process closes the FD.
  */
-void hl_ctx_mgr_fini(struct hl_device *hdev, struct hl_ctx_mgr *ctx_mgr)
+void hl_ctx_mgr_fini(struct hl_device *hdev, struct hl_ctx_mgr *mgr)
 {
 	struct hl_ctx *ctx;
 	struct idr *idp;
 	u32 id;
 
-	idp = &ctx_mgr->handles;
+	idp = &mgr->ctx_handles;
 
 	idr_for_each_entry(idp, ctx, id)
-		kref_put(&ctx->refcount, hl_ctx_do_release);
+		hl_ctx_free(hdev, ctx);
 
-	idr_destroy(&ctx_mgr->handles);
-	mutex_destroy(&ctx_mgr->lock);
+	idr_destroy(&mgr->ctx_handles);
+	mutex_destroy(&mgr->ctx_lock);
 }

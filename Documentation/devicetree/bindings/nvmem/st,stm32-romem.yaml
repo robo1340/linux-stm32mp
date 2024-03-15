@@ -13,7 +13,7 @@ description: |
   internal vref (VREFIN_CAL), unique device ID...
 
 maintainers:
-  - Fabrice Gasnier <fabrice.gasnier@foss.st.com>
+  - Fabrice Gasnier <fabrice.gasnier@st.com>
 
 allOf:
   - $ref: "nvmem.yaml#"
@@ -25,8 +25,12 @@ properties:
       - st,stm32mp13-bsec
       - st,stm32mp15-bsec
 
-  reg:
+  clocks:
     maxItems: 1
+    description: |
+      - It's not present on stm32f4.
+      - It's not present on stm32mp13.
+      - It's optional on stm32mp15.
 
 patternProperties:
   "^.*@[0-9a-f]+$":

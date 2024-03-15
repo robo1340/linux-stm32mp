@@ -771,36 +771,35 @@ static struct tty_driver *con3215_device(struct console *c, int *index)
 }
 
 /*
- * The below function is called as a panic/reboot notifier before the
- * system enters a disabled, endless loop.
- *
- * Notice we must use the spin_trylock() alternative, to prevent lockups
- * in atomic context (panic routine runs with secondary CPUs, local IRQs
- * and preemption disabled).
+ * panic() calls con3215_flush through a panic_notifier
+ * before the system enters a disabled, endless loop.
  */
-static int con3215_notify(struct notifier_block *self,
-			  unsigned long event, void *data)
+static void con3215_flush(void)
 {
 	struct raw3215_info *raw;
 	unsigned long flags;
 
 	raw = raw3215[0];  /* console 3215 is the first one */
-	if (!spin_trylock_irqsave(get_ccwdev_lock(raw->cdev), flags))
-		return NOTIFY_DONE;
+	spin_lock_irqsave(get_ccwdev_lock(raw->cdev), flags);
 	raw3215_make_room(raw, RAW3215_BUFFER_SIZE);
 	spin_unlock_irqrestore(get_ccwdev_lock(raw->cdev), flags);
+}
 
-	return NOTIFY_DONE;
+static int con3215_notify(struct notifier_block *self,
+			  unsigned long event, void *data)
+{
+	con3215_flush();
+	return NOTIFY_OK;
 }
 
 static struct notifier_block on_panic_nb = {
 	.notifier_call = con3215_notify,
-	.priority = INT_MIN + 1, /* run the callback late */
+	.priority = 0,
 };
 
 static struct notifier_block on_reboot_nb = {
 	.notifier_call = con3215_notify,
-	.priority = INT_MIN + 1, /* run the callback late */
+	.priority = 0,
 };
 
 /*

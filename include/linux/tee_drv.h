@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2015-2022 Linaro Limited
+ * Copyright (c) 2015-2016, Linaro Limited
  */
 
 #ifndef __TEE_DRV_H
@@ -20,11 +20,14 @@
  * specific TEE driver.
  */
 
-#define TEE_SHM_DYNAMIC		BIT(0)  /* Dynamic shared memory registered */
-					/* in secure world */
-#define TEE_SHM_USER_MAPPED	BIT(1)  /* Memory mapped in user space */
-#define TEE_SHM_POOL		BIT(2)  /* Memory allocated from pool */
-#define TEE_SHM_PRIV		BIT(3)  /* Memory private to TEE driver */
+#define TEE_SHM_MAPPED		BIT(0)	/* Memory mapped by the kernel */
+#define TEE_SHM_DMA_BUF		BIT(1)	/* Memory with dma-buf handle */
+#define TEE_SHM_EXT_DMA_BUF	BIT(2)	/* Memory with dma-buf handle */
+#define TEE_SHM_REGISTER	BIT(3)  /* Memory registered in secure world */
+#define TEE_SHM_USER_MAPPED	BIT(4)  /* Memory mapped in user space */
+#define TEE_SHM_POOL		BIT(5)  /* Memory allocated from pool */
+#define TEE_SHM_KERNEL_MAPPED	BIT(6)  /* Memory mapped in kernel space */
+#define TEE_SHM_PRIV		BIT(7)  /* Memory private to TEE driver */
 
 struct device;
 struct tee_device;
@@ -47,6 +50,8 @@ struct tee_shm_pool;
  *              non-blocking in nature.
  * @cap_memref_null: flag indicating if the TEE Client support shared
  *                   memory buffer with a NULL pointer.
+ * @cap_ocall:       flag indicating that OP-TEE supports OCALLs, allowing TAs
+ *                   to invoke commands on their CA.
  */
 struct tee_context {
 	struct tee_device *teedev;
@@ -55,6 +60,7 @@ struct tee_context {
 	bool releasing;
 	bool supp_nowait;
 	bool cap_memref_null;
+	bool cap_ocall;
 };
 
 struct tee_param_memref {
@@ -77,36 +83,6 @@ struct tee_param {
 	} u;
 };
 
-/* State an Ocall context for argument passed with struct tee_ocall2_arg */
-enum tee_ocall2_state {
-	TEE_OCALL2_IDLE,
-	TEE_OCALL2_IN_PROGRESS,
-};
-
-/*
- * struct tee_ocall2_arg - Ocall context argument passed by caller
- *
- * @state: Ocall unused, ready, in-progress
- * @session; Session the Ocall relates to
- * @in_commnad: Ocall command 32bit ID from the TEE service
- * @in_param: Ocall 32bit input parameter value from the TEE service
- * @out_result: Ocall 32bit result ID. Value 0 indicates an error.
- * @out_param: Ocall 32bit output parameter. TEEC_ERROR_* when @out_result is 0.
- */
-struct tee_ocall2_arg {
-	enum tee_ocall2_state state;
-	u32 session;
-	u32 in_param1;
-	u32 in_param2;
-	u32 out_param1;
-	u32 out_param2;
-};
-
-#define TEE_OCALL2_OUT_PARAM1_ERROR	0
-
-#define TEE_OCALL2_ARG_INIT \
-		((struct tee_ocall2_arg){ .state = TEE_OCALL2_IDLE })
-
 /**
  * struct tee_driver_ops - driver operations vtable
  * @get_version:	returns version of driver
@@ -114,7 +90,6 @@ struct tee_ocall2_arg {
  * @release:		release this open file
  * @open_session:	open a new session
  * @close_session:	close a session
- * @system_session:	declare session as a system session
  * @invoke_func:	invoke a trusted function
  * @cancel_req:		request cancel of an ongoing invoke or open
  * @supp_recv:		called for supplicant to get a command
@@ -129,16 +104,15 @@ struct tee_driver_ops {
 	void (*release)(struct tee_context *ctx);
 	int (*open_session)(struct tee_context *ctx,
 			    struct tee_ioctl_open_session_arg *arg,
-			    struct tee_param *param);
+			    struct tee_param *normal_param,
+			    u32 num_normal_params,
+			    struct tee_param *ocall_param);
 	int (*close_session)(struct tee_context *ctx, u32 session);
-	int (*system_session)(struct tee_context *ctx, u32 session);
 	int (*invoke_func)(struct tee_context *ctx,
 			   struct tee_ioctl_invoke_arg *arg,
-			   struct tee_param *param);
-	int (*invoke_func_ocall2)(struct tee_context *ctx,
-				  struct tee_ioctl_invoke_arg *arg,
-				  struct tee_param *param,
-				  struct tee_ocall2_arg *ocall_arg);
+			   struct tee_param *normal_param,
+			   u32 num_normal_params,
+			   struct tee_param *ocall_param);
 	int (*cancel_req)(struct tee_context *ctx, u32 cancel_id, u32 session);
 	int (*supp_recv)(struct tee_context *ctx, u32 *func, u32 *num_params,
 			 struct tee_param *param);
@@ -230,11 +204,7 @@ int tee_session_calc_client_uuid(uuid_t *uuid, u32 connection_method,
  * @num_pages:	number of locked pages
  * @refcount:	reference counter
  * @flags:	defined by TEE_SHM_* in tee_drv.h
- * @id:		unique id of a shared memory object on this device, shared
- *		with user space
- * @sec_world_id:
- *		secure world assigned id of this shared memory object, not
- *		used by all drivers
+ * @id:		unique id of a shared memory object on this device
  *
  * This pool is only supposed to be accessed directly from the TEE
  * subsystem and from drivers that implements their own shm pool manager.
@@ -250,43 +220,95 @@ struct tee_shm {
 	refcount_t refcount;
 	u32 flags;
 	int id;
-	u64 sec_world_id;
 };
 
 /**
- * struct tee_shm_pool - shared memory pool
+ * struct tee_shm_pool_mgr - shared memory manager
  * @ops:		operations
  * @private_data:	private data for the shared memory manager
  */
-struct tee_shm_pool {
-	const struct tee_shm_pool_ops *ops;
+struct tee_shm_pool_mgr {
+	const struct tee_shm_pool_mgr_ops *ops;
 	void *private_data;
 };
 
 /**
- * struct tee_shm_pool_ops - shared memory pool operations
+ * struct tee_shm_pool_mgr_ops - shared memory pool manager operations
  * @alloc:		called when allocating shared memory
  * @free:		called when freeing shared memory
- * @destroy_pool:	called when destroying the pool
+ * @destroy_poolmgr:	called when destroying the pool manager
  */
-struct tee_shm_pool_ops {
-	int (*alloc)(struct tee_shm_pool *pool, struct tee_shm *shm,
-		     size_t size, size_t align);
-	void (*free)(struct tee_shm_pool *pool, struct tee_shm *shm);
-	void (*destroy_pool)(struct tee_shm_pool *pool);
+struct tee_shm_pool_mgr_ops {
+	int (*alloc)(struct tee_shm_pool_mgr *poolmgr, struct tee_shm *shm,
+		     size_t size);
+	void (*free)(struct tee_shm_pool_mgr *poolmgr, struct tee_shm *shm);
+	void (*destroy_poolmgr)(struct tee_shm_pool_mgr *poolmgr);
 };
 
+/**
+ * tee_shm_pool_alloc() - Create a shared memory pool from shm managers
+ * @priv_mgr:	manager for driver private shared memory allocations
+ * @dmabuf_mgr:	manager for dma-buf shared memory allocations
+ *
+ * Allocation with the flag TEE_SHM_DMA_BUF set will use the range supplied
+ * in @dmabuf, others will use the range provided by @priv.
+ *
+ * @returns pointer to a 'struct tee_shm_pool' or an ERR_PTR on failure.
+ */
+struct tee_shm_pool *tee_shm_pool_alloc(struct tee_shm_pool_mgr *priv_mgr,
+					struct tee_shm_pool_mgr *dmabuf_mgr);
+
 /*
- * tee_shm_pool_alloc_res_mem() - Create a shm manager for reserved memory
+ * tee_shm_pool_mgr_alloc_res_mem() - Create a shm manager for reserved
+ * memory
  * @vaddr:	Virtual address of start of pool
  * @paddr:	Physical address of start of pool
  * @size:	Size in bytes of the pool
  *
+ * @returns pointer to a 'struct tee_shm_pool_mgr' or an ERR_PTR on failure.
+ */
+struct tee_shm_pool_mgr *tee_shm_pool_mgr_alloc_res_mem(unsigned long vaddr,
+							phys_addr_t paddr,
+							size_t size,
+							int min_alloc_order);
+
+/**
+ * tee_shm_pool_mgr_destroy() - Free a shared memory manager
+ */
+static inline void tee_shm_pool_mgr_destroy(struct tee_shm_pool_mgr *poolm)
+{
+	poolm->ops->destroy_poolmgr(poolm);
+}
+
+/**
+ * struct tee_shm_pool_mem_info - holds information needed to create a shared
+ * memory pool
+ * @vaddr:	Virtual address of start of pool
+ * @paddr:	Physical address of start of pool
+ * @size:	Size in bytes of the pool
+ */
+struct tee_shm_pool_mem_info {
+	unsigned long vaddr;
+	phys_addr_t paddr;
+	size_t size;
+};
+
+/**
+ * tee_shm_pool_alloc_res_mem() - Create a shared memory pool from reserved
+ * memory range
+ * @priv_info:	 Information for driver private shared memory pool
+ * @dmabuf_info: Information for dma-buf shared memory pool
+ *
+ * Start and end of pools will must be page aligned.
+ *
+ * Allocation with the flag TEE_SHM_DMA_BUF set will use the range supplied
+ * in @dmabuf, others will use the range provided by @priv.
+ *
  * @returns pointer to a 'struct tee_shm_pool' or an ERR_PTR on failure.
  */
-struct tee_shm_pool *tee_shm_pool_alloc_res_mem(unsigned long vaddr,
-						phys_addr_t paddr, size_t size,
-						int min_alloc_order);
+struct tee_shm_pool *
+tee_shm_pool_alloc_res_mem(struct tee_shm_pool_mem_info *priv_info,
+			   struct tee_shm_pool_mem_info *dmabuf_info);
 
 /**
  * tee_shm_pool_free() - Free a shared memory pool
@@ -295,10 +317,7 @@ struct tee_shm_pool *tee_shm_pool_alloc_res_mem(unsigned long vaddr,
  * The must be no remaining shared memory allocated from this pool when
  * this function is called.
  */
-static inline void tee_shm_pool_free(struct tee_shm_pool *pool)
-{
-	pool->ops->destroy_pool(pool);
-}
+void tee_shm_pool_free(struct tee_shm_pool *pool);
 
 /**
  * tee_get_drvdata() - Return driver_data pointer
@@ -306,20 +325,43 @@ static inline void tee_shm_pool_free(struct tee_shm_pool *pool)
  */
 void *tee_get_drvdata(struct tee_device *teedev);
 
-struct tee_shm *tee_shm_alloc_priv_buf(struct tee_context *ctx, size_t size);
+/**
+ * tee_shm_alloc() - Allocate shared memory
+ * @ctx:	Context that allocates the shared memory
+ * @size:	Requested size of shared memory
+ * @flags:	Flags setting properties for the requested shared memory.
+ *
+ * Memory allocated as global shared memory is automatically freed when the
+ * TEE file pointer is closed. The @flags field uses the bits defined by
+ * TEE_SHM_* above. TEE_SHM_MAPPED must currently always be set. If
+ * TEE_SHM_DMA_BUF global shared memory will be allocated and associated
+ * with a dma-buf handle, else driver private memory.
+ *
+ * @returns a pointer to 'struct tee_shm'
+ */
+struct tee_shm *tee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags);
 struct tee_shm *tee_shm_alloc_kernel_buf(struct tee_context *ctx, size_t size);
 
-struct tee_shm *tee_shm_register_kernel_buf(struct tee_context *ctx,
-					    void *addr, size_t length);
+/**
+ * tee_shm_register() - Register shared memory buffer
+ * @ctx:	Context that registers the shared memory
+ * @addr:	Address is userspace of the shared buffer
+ * @length:	Length of the shared buffer
+ * @flags:	Flags setting properties for the requested shared memory.
+ *
+ * @returns a pointer to 'struct tee_shm'
+ */
+struct tee_shm *tee_shm_register(struct tee_context *ctx, unsigned long addr,
+				 size_t length, u32 flags);
 
 /**
- * tee_shm_is_dynamic() - Check if shared memory object is of the dynamic kind
+ * tee_shm_is_registered() - Check if shared memory object in registered in TEE
  * @shm:	Shared memory handle
- * @returns true if object is dynamic shared memory
+ * @returns true if object is registered in TEE
  */
-static inline bool tee_shm_is_dynamic(struct tee_shm *shm)
+static inline bool tee_shm_is_registered(struct tee_shm *shm)
 {
-	return shm && (shm->flags & TEE_SHM_DYNAMIC);
+	return shm && (shm->flags & TEE_SHM_REGISTER);
 }
 
 /**
@@ -329,10 +371,34 @@ static inline bool tee_shm_is_dynamic(struct tee_shm *shm)
 void tee_shm_free(struct tee_shm *shm);
 
 /**
+ * tee_shm_get() - Increase reference count on a shared memory handle
+ * @shm:	Shared memory handle
+ */
+void tee_shm_get(struct tee_shm *shm);
+
+/**
  * tee_shm_put() - Decrease reference count on a shared memory handle
  * @shm:	Shared memory handle
  */
 void tee_shm_put(struct tee_shm *shm);
+
+/**
+ * tee_shm_va2pa() - Get physical address of a virtual address
+ * @shm:	Shared memory handle
+ * @va:		Virtual address to tranlsate
+ * @pa:		Returned physical address
+ * @returns 0 on success and < 0 on failure
+ */
+int tee_shm_va2pa(struct tee_shm *shm, void *va, phys_addr_t *pa);
+
+/**
+ * tee_shm_pa2va() - Get virtual address of a physical address
+ * @shm:	Shared memory handle
+ * @pa:		Physical address to tranlsate
+ * @va:		Returned virtual address
+ * @returns 0 on success and < 0 on failure
+ */
+int tee_shm_pa2va(struct tee_shm *shm, phys_addr_t pa, void **va);
 
 /**
  * tee_shm_get_va() - Get virtual address of a shared memory plus an offset
@@ -466,20 +532,6 @@ int tee_client_open_session(struct tee_context *ctx,
 int tee_client_close_session(struct tee_context *ctx, u32 session);
 
 /**
- * tee_client_system_session() - Declare session as a system session
- * @ctx:	TEE Context
- * @session:	Session id
- *
- * This function requests TEE to provision an entry context ready to use for
- * that session only. The provisioned entry context is used for command
- * invocation and session closure, not for command cancelling requests.
- * TEE releases the provisioned context upon session closure.
- *
- * Return < 0 on error else 0 if an entry context has been provisioned.
- */
-int tee_client_system_session(struct tee_context *ctx, u32 session);
-
-/**
  * tee_client_invoke_func() - Invoke a function in a Trusted Application
  * @ctx:	TEE Context
  * @arg:	Invoke arguments, see description of
@@ -557,42 +609,4 @@ struct tee_context *teedev_open(struct tee_device *teedev);
  */
 void teedev_close_context(struct tee_context *ctx);
 
-/* Ocall2 helper macros & functions */
-#define TEE_OCALL2_PARAM1_ERROR		0
-
-static inline bool tee_ocall_is_used(struct tee_ocall2_arg *arg)
-{
-	return arg;
-}
-
-static inline bool tee_ocall_in_progress(struct tee_ocall2_arg *arg)
-{
-	return arg && arg->state == TEE_OCALL2_IN_PROGRESS;
-}
-
-static inline void tee_ocall_failure(struct tee_ocall2_arg *arg)
-{
-	arg->out_param1 = TEE_OCALL2_PARAM1_ERROR;
-	arg->out_param2 = 0;
-}
-
-/**
- * tee_client_invoke_func_ocall2() - Invoke a TEE service with Ocall2 support
- * @ctx:        TEE Context
- * @arg:        Invoke arguments, see description of struct tee_ioctl_invoke_arg
- * @param:      Parameters passed to the Trusted Application
- * @ocall_arg:  Input/output arguments for the Ocall or NULL
- *
- * Returns < 0 on error else see @arg->ret for result.
- * On successful return, use tee_ocall_in_progress() to distinguish between
- * a regular invocation return and an Ocall command from TEE.
- *
- * In order to return from an Ocall, call tee_client_invoke_with_ocall2()
- * with the same @context, @ocall_arg arguments and allocated @arg and
- * @param memory areas.
- */
-int tee_client_invoke_func_ocall2(struct tee_context *ctx,
-				  struct tee_ioctl_invoke_arg *arg,
-				  struct tee_param *param,
-				  struct tee_ocall2_arg *ocall_arg);
 #endif /*__TEE_DRV_H*/

@@ -48,7 +48,6 @@
 
 ******************************************************************************/
 
-#include <linux/aperture.h>
 #include <linux/compat.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -80,6 +79,7 @@
 
 #ifdef __powerpc__
 #include <asm/machdep.h>
+#include <asm/prom.h>
 #include "../macmodes.h"
 #endif
 #ifdef __sparc__
@@ -3534,11 +3534,7 @@ static int atyfb_pci_probe(struct pci_dev *pdev,
 	struct fb_info *info;
 	struct resource *rp;
 	struct atyfb_par *par;
-	int rc;
-
-	rc = aperture_remove_conflicting_pci_devices(pdev, "atyfb");
-	if (rc)
-		return rc;
+	int rc = -ENOMEM;
 
 	/* Enable device in PCI config */
 	if (pci_enable_device(pdev)) {
@@ -3896,7 +3892,7 @@ static int __init atyfb_setup(char *options)
 			 && (!strncmp(this_opt, "Mach64:", 7))) {
 			static unsigned char m64_num;
 			static char mach64_str[80];
-			strscpy(mach64_str, this_opt + 7, sizeof(mach64_str));
+			strlcpy(mach64_str, this_opt + 7, sizeof(mach64_str));
 			if (!store_video_par(mach64_str, m64_num)) {
 				m64_num++;
 				mach64_count = m64_num;

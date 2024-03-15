@@ -9,7 +9,6 @@
 #include <linux/gpio/consumer.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 
 #include <video/mipi_display.h>
@@ -78,18 +77,18 @@ static inline struct hx8394 *panel_to_hx8394(struct drm_panel *panel)
 	return container_of(panel, struct hx8394, panel);
 }
 
-#define dcs_write_cmd_seq(c, cmd, seq...)						\
+#define dcs_write_cmd_seq(ctx, cmd, seq...)						\
 ({											\
 	static const u8 d[] = { seq };							\
-	struct mipi_dsi_device *dsi = to_mipi_dsi_device((c)->dev);			\
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);			\
 	int err;									\
 	err = mipi_dsi_dcs_write(dsi, cmd, d, ARRAY_SIZE(d));				\
 	if (err < 0)									\
-		dev_err(ctx->dev, "MIPI DSI DCS write failed: %d\n", err);		\
+		dev_err(ctx->dev, "MIPI DSI DCS write failed: %d\n",err);		\
 })
 
 static void hx8394_dcs_write_buf(struct hx8394 *ctx, const void *data,
-				 size_t len)
+				  size_t len)
 {
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 	int err;
@@ -146,6 +145,7 @@ static void hx8394_init_sequence(struct hx8394 *ctx)
 	dcs_write_cmd_seq(ctx, MCS_NO_DOC3, 0xED);
 	dcs_write_cmd_seq(ctx, MIPI_DCS_SET_ADDRESS_MODE, FH);
 }
+
 
 static int hx8394_read_id(struct hx8394 *ctx)
 {
@@ -207,10 +207,17 @@ static int hx8394_prepare(struct drm_panel *panel)
 	if (ctx->prepared)
 		return 0;
 
-	ret = pm_runtime_get_sync(panel->dev);
+	ret = regulator_enable(ctx->supply);
 	if (ret < 0) {
-		pm_runtime_put_autosuspend(panel->dev);
+		dev_err(ctx->dev, "failed to enable supply: %d\n", ret);
 		return ret;
+	}
+
+	if (ctx->reset_gpio) {
+		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+		msleep(1);
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+		msleep(50);
 	}
 
 	ret = hx8394_read_id(ctx);
@@ -257,10 +264,14 @@ static int hx8394_unprepare(struct drm_panel *panel)
 	if (ret)
 		dev_warn(panel->dev, "failed to enter sleep mode: %d\n", ret);
 
-	pm_runtime_mark_last_busy(panel->dev);
-	ret = pm_runtime_put_autosuspend(panel->dev);
-	if (ret < 0)
-		return ret;
+	msleep(120);
+
+	if (ctx->reset_gpio) {
+		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+		msleep(20);
+	}
+
+	regulator_disable(ctx->supply);
 
 	ctx->prepared = false;
 
@@ -268,7 +279,7 @@ static int hx8394_unprepare(struct drm_panel *panel)
 }
 
 static int hx8394_get_modes(struct drm_panel *panel,
-			    struct drm_connector *connector)
+			     struct drm_connector *connector)
 {
 	struct drm_display_mode *mode;
 
@@ -352,60 +363,18 @@ static int hx8394_probe(struct mipi_dsi_device *dsi)
 		return ret;
 	}
 
-	pm_runtime_enable(ctx->dev);
-	pm_runtime_set_autosuspend_delay(ctx->dev, 1000);
-	pm_runtime_use_autosuspend(ctx->dev);
-
 	return 0;
 }
 
-static void hx8394_remove(struct mipi_dsi_device *dsi)
+static int hx8394_remove(struct mipi_dsi_device *dsi)
 {
 	struct hx8394 *ctx = mipi_dsi_get_drvdata(dsi);
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 
-	pm_runtime_dont_use_autosuspend(ctx->dev);
-	pm_runtime_disable(ctx->dev);
-}
-
-static __maybe_unused int rocktech_hx8394_suspend(struct device *dev)
-{
-	struct hx8394 *ctx = dev_get_drvdata(dev);
-
-	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-	msleep(20);
-
-	regulator_disable(ctx->supply);
-
 	return 0;
 }
-
-static __maybe_unused int rocktech_hx8394_resume(struct device *dev)
-{
-	struct hx8394 *ctx = dev_get_drvdata(dev);
-	int ret;
-
-	ret = regulator_enable(ctx->supply);
-	if (ret < 0) {
-		dev_err(ctx->dev, "failed to enable supply: %d\n", ret);
-		return ret;
-	}
-
-	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-	mdelay(1);
-	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
-	msleep(50);
-
-	return 0;
-}
-
-static const struct dev_pm_ops rocktech_hx8394_pm_ops = {
-	SET_RUNTIME_PM_OPS(rocktech_hx8394_suspend, rocktech_hx8394_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
-};
 
 static const struct of_device_id rocktech_hx8394_of_match[] = {
 	{ .compatible = "rocktech,hx8394" },
@@ -419,7 +388,6 @@ static struct mipi_dsi_driver rocktech_hx8394_driver = {
 	.driver = {
 		.name = "panel-rocktech-hx8394",
 		.of_match_table = rocktech_hx8394_of_match,
-		.pm = &rocktech_hx8394_pm_ops,
 	},
 };
 module_mipi_dsi_driver(rocktech_hx8394_driver);

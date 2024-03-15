@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) STMicroelectronics 2022 - All Rights Reserved
- * Author: Gabriel Fernandez <gabriel.fernandez@foss.st.com> for STMicroelectronics.
+ * Copyright (C) STMicroelectronics 2021 - All Rights Reserved
+ * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
  */
 
 #include <linux/of.h>
@@ -149,7 +149,6 @@ int stm32_rcc_reset_init(struct device *dev, const struct of_device_id *match,
 	if (!reset_data)
 		return -ENOMEM;
 
-	spin_lock_init(&reset_data->lock);
 	reset_data->membase = base;
 	reset_data->rcdev.owner = THIS_MODULE;
 	reset_data->rcdev.ops = &stm32_reset_ops;

@@ -126,28 +126,12 @@ struct serial_rs485 {
 #define SER_RS485_TERMINATE_BUS		(1 << 5)	/* Enable bus
 							   termination
 							   (if supported) */
-
-/* RS-485 addressing mode */
-#define SER_RS485_ADDRB			(1 << 6)	/* Enable addressing mode */
-#define SER_RS485_ADDR_RECV		(1 << 7)	/* Receive address filter */
-#define SER_RS485_ADDR_DEST		(1 << 8)	/* Destination address */
-
 	__u32	delay_rts_before_send;	/* Delay before send (milliseconds) */
 	__u32	delay_rts_after_send;	/* Delay after send (milliseconds) */
-	__u32	delay_rts_before_send_ns;	/* Delay before send (nanoseconds) */
-	__u32	delay_rts_after_send_ns;	/* Delay after send (nanoseconds) */
-
-	/* The fields below are defined by flags */
-	union {
-		__u32	padding[3];		/* Memory is cheap, new structs are a pain */
-
-		struct {
-			__u8	addr_recv;
-			__u8	addr_dest;
-			__u8	padding0[2];
-			__u32	padding1[2];
-		};
-	};
+	__u32	delay_rts_before_send_ns;	/* Delay (nanoseconds) */
+	__u32	delay_rts_after_send_ns;	/* Delay (nanoseconds) */
+	__u32	padding[3];		/* Memory is cheap, new structs
+					   are a royal PITA .. */
 };
 
 /*

@@ -450,11 +450,12 @@ static int tpg110_probe(struct spi_device *spi)
 	return 0;
 }
 
-static void tpg110_remove(struct spi_device *spi)
+static int tpg110_remove(struct spi_device *spi)
 {
 	struct tpg110 *tpg = spi_get_drvdata(spi);
 
 	drm_panel_remove(&tpg->panel);
+	return 0;
 }
 
 static const struct of_device_id tpg110_match[] = {

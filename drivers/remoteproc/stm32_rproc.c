@@ -5,6 +5,7 @@
  *          Fabien Dessenne <fabien.dessenne@st.com> for STMicroelectronics.
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -23,9 +24,6 @@
 #include <linux/workqueue.h>
 
 #include "remoteproc_internal.h"
-
-#define HOLD_BOOT		0
-#define RELEASE_BOOT		1
 
 #define MBOX_NB_VQ		2
 #define MBOX_NB_MBX		4
@@ -86,8 +84,7 @@ struct stm32_mbox {
 
 struct stm32_rproc {
 	struct reset_control *rst;
-	struct reset_control *hold_boot_rst;
-	struct stm32_syscon hold_boot;
+	struct reset_control *hold_boot;
 	struct stm32_syscon pdds;
 	struct stm32_syscon m4_state;
 	struct stm32_syscon rsctbl;
@@ -436,16 +433,8 @@ static void stm32_rproc_mb_vq_work(struct work_struct *work)
 	struct stm32_mbox *mb = container_of(work, struct stm32_mbox, vq_work);
 	struct rproc *rproc = dev_get_drvdata(mb->client.dev);
 
-	mutex_lock(&rproc->lock);
-
-	if (rproc->state != RPROC_RUNNING)
-		goto unlock_mutex;
-
 	if (rproc_vq_interrupt(rproc, mb->vq_id) == IRQ_NONE)
 		dev_dbg(&rproc->dev, "no message found in vq%d\n", mb->vq_id);
-
-unlock_mutex:
-	mutex_unlock(&rproc->lock);
 }
 
 static void stm32_rproc_mb_callback(struct mbox_client *cl, void *data)
@@ -551,30 +540,6 @@ err_probe:
 	return -EPROBE_DEFER;
 }
 
-static int stm32_rproc_set_hold_boot(struct rproc *rproc, bool hold)
-{
-	struct stm32_rproc *ddata = rproc->priv;
-	struct stm32_syscon hold_boot = ddata->hold_boot;
-	int val, err;
-
-	if (ddata->hold_boot_rst) {
-		/* Use the SCMI reset controller */
-		if (!hold)
-			return reset_control_deassert(ddata->hold_boot_rst);
-		else
-			return reset_control_assert(ddata->hold_boot_rst);
-	}
-
-	val = hold ? HOLD_BOOT : RELEASE_BOOT;
-
-	err = regmap_update_bits(hold_boot.map, hold_boot.reg,
-				 hold_boot.mask, val);
-	if (err)
-		dev_err(&rproc->dev, "failed to set hold boot\n");
-
-	return err;
-}
-
 static void stm32_rproc_add_coredump_trace(struct rproc *rproc)
 {
 	struct rproc_debug_trace *trace;
@@ -614,18 +579,20 @@ static int stm32_rproc_start(struct rproc *rproc)
 		}
 	}
 
-	err = stm32_rproc_set_hold_boot(rproc, false);
+	err = reset_control_deassert(ddata->hold_boot);
 	if (err)
 		return err;
 
-	return stm32_rproc_set_hold_boot(rproc, true);
+	return reset_control_assert(ddata->hold_boot);
 }
 
 static int stm32_rproc_attach(struct rproc *rproc)
 {
+	struct stm32_rproc *ddata = rproc->priv;
+
 	stm32_rproc_add_coredump_trace(rproc);
 
-	return stm32_rproc_set_hold_boot(rproc, true);
+	return reset_control_assert(ddata->hold_boot);
 }
 
 static int stm32_rproc_detach(struct rproc *rproc)
@@ -642,7 +609,7 @@ static int stm32_rproc_detach(struct rproc *rproc)
 	}
 
 	/* Allow remote processor to auto-reboot */
-	return stm32_rproc_set_hold_boot(rproc, false);
+	return reset_control_deassert(ddata->hold_boot);
 }
 
 static int stm32_rproc_stop(struct rproc *rproc)
@@ -652,9 +619,11 @@ static int stm32_rproc_stop(struct rproc *rproc)
 
 	stm32_rproc_request_shutdown(rproc);
 
-	err = stm32_rproc_set_hold_boot(rproc, true);
-	if (err)
+	err = reset_control_assert(ddata->hold_boot);
+	if (err) {
+		dev_err(&rproc->dev, "failed to assert the hold boot\n");
 		return err;
+	}
 
 	err = reset_control_assert(ddata->rst);
 	if (err) {
@@ -849,22 +818,10 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev,
 		return dev_err_probe(dev, PTR_ERR(ddata->rst),
 				     "failed to get mcu_reset\n");
 
-	ddata->hold_boot_rst = devm_reset_control_get(dev, "hold_boot");
-	if (PTR_ERR(ddata->hold_boot_rst) == -EPROBE_DEFER)
-		return PTR_ERR(ddata->hold_boot_rst);
-
-	if (!ddata->hold_boot_rst) {
-		/*
-		 * If the hold boot is not managed by the SCMI reset controller,
-		 * manage it through the syscon controller
-		 */
-		err = stm32_rproc_get_syscon(np, "st,syscfg-holdboot",
-					     &ddata->hold_boot);
-		if (err) {
-			dev_err(dev, "failed to get hold boot\n");
-			return err;
-		}
-	}
+	ddata->hold_boot = devm_reset_control_get(dev, "hold_boot");
+	if (IS_ERR(ddata->hold_boot))
+		return dev_err_probe(dev, PTR_ERR(ddata->hold_boot),
+				      "failed to get mcu reset\n");
 
 	err = stm32_rproc_get_syscon(np, "st,syscfg-pdds", &ddata->pdds);
 	if (err)
@@ -932,7 +889,7 @@ static int stm32_rproc_probe(struct platform_device *pdev)
 	trproc = tee_rproc_register(dev, STM32_MP1_FW_ID);
 	if (!IS_ERR_OR_NULL(trproc)) {
 		/*
-		 * Delegate the firmware management to the secure context. The
+		 * Delagate the firmware management to the secure context. The
 		 * firmware loaded has to be signed.
 		 */
 		dev_info(dev, "Support of signed firmware only\n");

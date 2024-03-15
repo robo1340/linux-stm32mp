@@ -25,9 +25,6 @@
 /* Page 0 */
 #define GC2145_REG_ANALOG_MODE1	0x17
 #define GC2145_REG_OUTPUT_FMT	0x84
-#define GC2145_REG_SYNC_MODE	0x86
-#define GC2145_SYNC_MODE_COL_SWITCH	BIT(4)
-#define GC2145_SYNC_MODE_ROW_SWITCH	BIT(5)
 #define GC2145_REG_DEBUG_MODE2	0x8c
 #define GC2145_REG_DEBUG_MODE3	0x8d
 #define GC2145_REG_CHIP_ID	0xf0
@@ -567,7 +564,7 @@ static const struct gc2145_reg mode_1280_720_regs[] = {
 	{0xfe, 0x00},
 	/* Framerate 50Hz */
 	{0xfe, 0x00},
-	{0x05, 0x01}, {0x06, 0x56}, {0x07, 0x00}, {0x08, 0x11},
+	{0x05, 0x01}, {0x06, 0x56}, {0x07, 0x00}, {0x08, 0x12},
 	{0xfe, 0x01}, {0x25, 0x00}, {0x26, 0xe6}, {0x27, 0x02},
 	{0x28, 0xb2}, {0x29, 0x02}, {0x2a, 0xb2}, {0x2b, 0x02},
 	{0x2c, 0xb2}, {0x2d, 0x02}, {0x2e, 0xb2},
@@ -814,7 +811,7 @@ static const struct gc2145_reg mode_1600_1200_regs[] = {
 	{0xfe, 0x00},
 	/* Framerate 50Hz */
 	{0xfe, 0x00},
-	{0x05, 0x01}, {0x06, 0x56}, {0x07, 0x00}, {0x08, 0x10},
+	{0x05, 0x01}, {0x06, 0x56}, {0x07, 0x00}, {0x08, 0x32},
 	{0xfe, 0x01},
 	{0x25, 0x00}, {0x26, 0xfa}, {0x27, 0x04}, {0x28, 0xe2},
 	{0x29, 0x04}, {0x2a, 0xe2}, {0x2b, 0x04}, {0x2c, 0xe2},
@@ -897,14 +894,12 @@ static const struct gc2145_mode supported_modes[] = {
  * @colorspace: V4L2 colospace
  * @datatype: MIPI CSI2 data type
  * @output_fmt: GC2145 output format
- * @row_col_switch: control of GC2145 row/col switch feature
  */
 struct gc2145_format {
 	unsigned int code;
 	unsigned int colorspace;
 	unsigned char datatype;
 	unsigned char output_fmt;
-	unsigned char row_col_switch;
 };
 
 /* All supported formats */
@@ -941,32 +936,10 @@ static const struct gc2145_format supported_formats[] = {
 		.output_fmt	= 0x06,
 	},
 	{
-		.code           = MEDIA_BUS_FMT_SGRBG8_1X8,
-		.colorspace     = V4L2_COLORSPACE_RAW,
-		.datatype       = MIPI_CSI2_DT_RAW8,
-		.output_fmt     = 0x17,
-		.row_col_switch = GC2145_SYNC_MODE_COL_SWITCH,
-	},
-	{
 		.code           = MEDIA_BUS_FMT_SRGGB8_1X8,
 		.colorspace     = V4L2_COLORSPACE_RAW,
 		.datatype       = MIPI_CSI2_DT_RAW8,
-		.output_fmt     = 0x17,
-		.row_col_switch = GC2145_SYNC_MODE_COL_SWITCH | GC2145_SYNC_MODE_ROW_SWITCH,
-	},
-	{
-		.code           = MEDIA_BUS_FMT_SBGGR8_1X8,
-		.colorspace     = V4L2_COLORSPACE_RAW,
-		.datatype       = MIPI_CSI2_DT_RAW8,
-		.output_fmt     = 0x17,
-		.row_col_switch = 0,
-	},
-	{
-		.code           = MEDIA_BUS_FMT_SGBRG8_1X8,
-		.colorspace     = V4L2_COLORSPACE_RAW,
-		.datatype       = MIPI_CSI2_DT_RAW8,
-		.output_fmt     = 0x17,
-		.row_col_switch = GC2145_SYNC_MODE_ROW_SWITCH,
+		.output_fmt     = 0x19, /* Image is taken out of the Lens correction */
 	},
 };
 
@@ -1308,7 +1281,6 @@ static int gc2145_start_streaming(struct gc2145 *gc2145)
 	const struct gc2145_reg_list *reg_list;
 	const struct gc2145_format *gc2145_format;
 	uint16_t lwc, fifo_full_lvl, fifo_gate_mode;
-	u8 sync_mode;
 	int ret;
 
 	ret = pm_runtime_resume_and_get(&client->dev);
@@ -1341,17 +1313,6 @@ static int gc2145_start_streaming(struct gc2145 *gc2145)
 	if (ret)
 		return ret;
 
-	ret = gc2145_read_reg(gc2145, GC2145_REG_SYNC_MODE, &sync_mode, 1);
-	if (ret)
-		return ret;
-
-	sync_mode &= ~(GC2145_SYNC_MODE_COL_SWITCH | GC2145_SYNC_MODE_ROW_SWITCH);
-	sync_mode |= gc2145_format->row_col_switch;
-
-	ret = gc2145_write_reg(gc2145, GC2145_REG_SYNC_MODE, sync_mode);
-	if (ret)
-		return ret;
-
 	/* Set 3rd page access */
 	ret = gc2145_write_reg(gc2145, GC2145_REG_PAGE_SELECT, 0x03);
 	if (ret)
@@ -1365,10 +1326,7 @@ static int gc2145_start_streaming(struct gc2145 *gc2145)
 	 */
 	if (gc2145_format->colorspace != V4L2_COLORSPACE_RAW)
 		lwc = gc2145->mode->width * 2;
-	else if (gc2145_format->code == MEDIA_BUS_FMT_SGRBG8_1X8 ||
-		 gc2145_format->code == MEDIA_BUS_FMT_SRGGB8_1X8 ||
-		 gc2145_format->code == MEDIA_BUS_FMT_SBGGR8_1X8 ||
-		 gc2145_format->code == MEDIA_BUS_FMT_SGBRG8_1X8)
+	else if (gc2145_format->code == MEDIA_BUS_FMT_SRGGB8_1X8)
 		lwc = gc2145->mode->width * 1;
 	else
 		lwc = gc2145->mode->width + (gc2145->mode->width / 4);
@@ -1382,13 +1340,14 @@ static int gc2145_start_streaming(struct gc2145 *gc2145)
 
 	/*
 	 * Adjust the MIPI Fifo Full Level
+	 * TODO - would need to understand better the constraints
 	 * 640x480 RGB: 0x0190
-	 * 1280x720 / 1600x1200 (aka no scaler) non RAW: 0x0001
+	 * 1280x720 / 1600x1200 (aka no scaler) non RAW: 0x0010
 	 * 1600x1200 RAW: 0x0190
 	 */
 	if (gc2145_format->colorspace != V4L2_COLORSPACE_RAW) {
-		if (gc2145->mode->width == 1280 || gc2145->mode->width == 1600)
-			fifo_full_lvl = 0x0001;
+		if ((gc2145->mode->width == 720) || (gc2145->mode->width == 1200))
+			fifo_full_lvl = 0x0010;
 		else
 			fifo_full_lvl = 0x0190;
 	} else
@@ -1943,7 +1902,7 @@ error_power_off:
 	return ret;
 }
 
-static void gc2145_remove(struct i2c_client *client)
+static int gc2145_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct gc2145 *gc2145 = to_gc2145(sd);
@@ -1959,6 +1918,7 @@ static void gc2145_remove(struct i2c_client *client)
 
 	mutex_destroy(&gc2145->mutex);
 
+	return 0;
 }
 
 static const struct of_device_id gc2145_dt_ids[] = {

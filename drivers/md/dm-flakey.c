@@ -26,13 +26,13 @@ struct flakey_c {
 	struct dm_dev *dev;
 	unsigned long start_time;
 	sector_t start;
-	unsigned int up_interval;
-	unsigned int down_interval;
+	unsigned up_interval;
+	unsigned down_interval;
 	unsigned long flags;
-	unsigned int corrupt_bio_byte;
-	unsigned int corrupt_bio_rw;
-	unsigned int corrupt_bio_value;
-	blk_opf_t corrupt_bio_flags;
+	unsigned corrupt_bio_byte;
+	unsigned corrupt_bio_rw;
+	unsigned corrupt_bio_value;
+	unsigned corrupt_bio_flags;
 };
 
 enum feature_flag_bits {
@@ -48,7 +48,7 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 			  struct dm_target *ti)
 {
 	int r;
-	unsigned int argc;
+	unsigned argc;
 	const char *arg_name;
 
 	static const struct dm_arg _args[] = {
@@ -124,9 +124,9 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 			 * Direction r or w?
 			 */
 			arg_name = dm_shift_arg(as);
-			if (arg_name && !strcasecmp(arg_name, "w"))
+			if (!strcasecmp(arg_name, "w"))
 				fc->corrupt_bio_rw = WRITE;
-			else if (arg_name && !strcasecmp(arg_name, "r"))
+			else if (!strcasecmp(arg_name, "r"))
 				fc->corrupt_bio_rw = READ;
 			else {
 				ti->error = "Invalid corrupt bio direction (r or w)";
@@ -145,11 +145,7 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 			/*
 			 * Only corrupt bios with these flags set.
 			 */
-			BUILD_BUG_ON(sizeof(fc->corrupt_bio_flags) !=
-				     sizeof(unsigned int));
-			r = dm_read_arg(_args + 3, as,
-				(__force unsigned int *)&fc->corrupt_bio_flags,
-				&ti->error);
+			r = dm_read_arg(_args + 3, as, &fc->corrupt_bio_flags, &ti->error);
 			if (r)
 				return r;
 			argc--;
@@ -284,7 +280,9 @@ static void flakey_map_bio(struct dm_target *ti, struct bio *bio)
 	struct flakey_c *fc = ti->private;
 
 	bio_set_dev(bio, fc->dev->bdev);
-	bio->bi_iter.bi_sector = flakey_map_sector(ti, bio->bi_iter.bi_sector);
+	if (bio_sectors(bio) || op_is_zone_mgmt(bio_op(bio)))
+		bio->bi_iter.bi_sector =
+			flakey_map_sector(ti, bio->bi_iter.bi_sector);
 }
 
 static void corrupt_bio_data(struct bio *bio, struct flakey_c *fc)
@@ -303,13 +301,9 @@ static void corrupt_bio_data(struct bio *bio, struct flakey_c *fc)
 	 */
 	bio_for_each_segment(bvec, bio, iter) {
 		if (bio_iter_len(bio, iter) > corrupt_bio_byte) {
-			char *segment;
-			struct page *page = bio_iter_page(bio, iter);
-			if (unlikely(page == ZERO_PAGE(0)))
-				break;
-			segment = bvec_kmap_local(&bvec);
+			char *segment = (page_address(bio_iter_page(bio, iter))
+					 + bio_iter_offset(bio, iter));
 			segment[corrupt_bio_byte] = fc->corrupt_bio_value;
-			kunmap_local(segment);
 			DMDEBUG("Corrupting data bio=%p by writing %u to byte %u "
 				"(rw=%c bi_opf=%u bi_sector=%llu size=%u)\n",
 				bio, fc->corrupt_bio_value, fc->corrupt_bio_byte,
@@ -324,7 +318,7 @@ static void corrupt_bio_data(struct bio *bio, struct flakey_c *fc)
 static int flakey_map(struct dm_target *ti, struct bio *bio)
 {
 	struct flakey_c *fc = ti->private;
-	unsigned int elapsed;
+	unsigned elapsed;
 	struct per_bio_data *pb = dm_per_bio_data(bio, sizeof(struct per_bio_data));
 	pb->bio_submitted = false;
 
@@ -365,11 +359,9 @@ static int flakey_map(struct dm_target *ti, struct bio *bio)
 		/*
 		 * Corrupt matching writes.
 		 */
-		if (fc->corrupt_bio_byte) {
-			if (fc->corrupt_bio_rw == WRITE) {
-				if (all_corrupt_bio_flags_match(bio, fc))
-					corrupt_bio_data(bio, fc);
-			}
+		if (fc->corrupt_bio_byte && (fc->corrupt_bio_rw == WRITE)) {
+			if (all_corrupt_bio_flags_match(bio, fc))
+				corrupt_bio_data(bio, fc);
 			goto map_bio;
 		}
 
@@ -395,14 +387,13 @@ static int flakey_end_io(struct dm_target *ti, struct bio *bio,
 		return DM_ENDIO_DONE;
 
 	if (!*error && pb->bio_submitted && (bio_data_dir(bio) == READ)) {
-		if (fc->corrupt_bio_byte) {
-			if ((fc->corrupt_bio_rw == READ) &&
-			    all_corrupt_bio_flags_match(bio, fc)) {
-				/*
-				 * Corrupt successful matching READs while in down state.
-				 */
-				corrupt_bio_data(bio, fc);
-			}
+		if (fc->corrupt_bio_byte && (fc->corrupt_bio_rw == READ) &&
+		    all_corrupt_bio_flags_match(bio, fc)) {
+			/*
+			 * Corrupt successful matching READs while in down state.
+			 */
+			corrupt_bio_data(bio, fc);
+
 		} else if (!test_bit(DROP_WRITES, &fc->flags) &&
 			   !test_bit(ERROR_WRITES, &fc->flags)) {
 			/*
@@ -417,11 +408,11 @@ static int flakey_end_io(struct dm_target *ti, struct bio *bio,
 }
 
 static void flakey_status(struct dm_target *ti, status_type_t type,
-			  unsigned int status_flags, char *result, unsigned int maxlen)
+			  unsigned status_flags, char *result, unsigned maxlen)
 {
-	unsigned int sz = 0;
+	unsigned sz = 0;
 	struct flakey_c *fc = ti->private;
-	unsigned int drop_writes, error_writes;
+	unsigned drop_writes, error_writes;
 
 	switch (type) {
 	case STATUSTYPE_INFO:
@@ -465,7 +456,8 @@ static int flakey_prepare_ioctl(struct dm_target *ti, struct block_device **bdev
 	/*
 	 * Only pass ioctls through if the device sizes match exactly.
 	 */
-	if (fc->start || ti->len != bdev_nr_sectors((*bdev)))
+	if (fc->start ||
+	    ti->len != i_size_read((*bdev)->bd_inode) >> SECTOR_SHIFT)
 		return 1;
 	return 0;
 }

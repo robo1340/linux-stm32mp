@@ -160,6 +160,8 @@ struct shash_desc {
  */
 #define HASH_MAX_DESCSIZE	(sizeof(struct shash_desc) + 360)
 
+#define HASH_MAX_STATESIZE	512
+
 #define SHASH_DESC_ON_STACK(shash, ctx)					     \
 	char __##shash##_desc[sizeof(struct shash_desc) + HASH_MAX_DESCSIZE] \
 		__aligned(__alignof__(struct shash_desc));		     \
@@ -715,8 +717,6 @@ static inline void ahash_request_set_crypt(struct ahash_request *req,
  */
 struct crypto_shash *crypto_alloc_shash(const char *alg_name, u32 type,
 					u32 mask);
-
-int crypto_has_shash(const char *alg_name, u32 type, u32 mask);
 
 static inline struct crypto_tfm *crypto_shash_tfm(struct crypto_shash *tfm)
 {

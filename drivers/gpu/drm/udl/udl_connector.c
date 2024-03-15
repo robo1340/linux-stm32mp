@@ -8,7 +8,6 @@
  */
 
 #include <drm/drm_atomic_state_helper.h>
-#include <drm/drm_edid.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_probe_helper.h>
 
@@ -129,7 +128,7 @@ struct drm_connector *udl_connector_init(struct drm_device *dev)
 
 	connector = &udl_connector->connector;
 	drm_connector_init(dev, connector, &udl_connector_funcs,
-			   DRM_MODE_CONNECTOR_VGA);
+			   DRM_MODE_CONNECTOR_DVII);
 	drm_connector_helper_add(connector, &udl_connector_helper_funcs);
 
 	connector->polled = DRM_CONNECTOR_POLL_HPD |

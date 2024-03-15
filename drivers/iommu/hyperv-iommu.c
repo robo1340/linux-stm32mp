@@ -68,6 +68,7 @@ static int hyperv_irq_remapping_alloc(struct irq_domain *domain,
 {
 	struct irq_alloc_info *info = arg;
 	struct irq_data *irq_data;
+	struct irq_desc *desc;
 	int ret = 0;
 
 	if (!info || info->type != X86_IRQ_ALLOC_TYPE_IOAPIC || nr_irqs > 1)
@@ -89,7 +90,8 @@ static int hyperv_irq_remapping_alloc(struct irq_domain *domain,
 	 * Hypver-V IO APIC irq affinity should be in the scope of
 	 * ioapic_max_cpumask because no irq remapping support.
 	 */
-	irq_data_update_affinity(irq_data, &ioapic_max_cpumask);
+	desc = irq_data_to_desc(irq_data);
+	cpumask_copy(desc->irq_common_data.affinity, &ioapic_max_cpumask);
 
 	return 0;
 }
@@ -192,7 +194,7 @@ hyperv_root_ir_compose_msi_msg(struct irq_data *irq_data, struct msi_msg *msg)
 	u32 vector;
 	struct irq_cfg *cfg;
 	int ioapic_id;
-	const struct cpumask *affinity;
+	struct cpumask *affinity;
 	int cpu;
 	struct hv_interrupt_entry entry;
 	struct hyperv_root_ir_data *data = irq_data->chip_data;

@@ -16,7 +16,6 @@
 #include <crypto/authenc.h>
 #include <linux/err.h>
 #include <linux/module.h>
-#include <net/gro.h>
 #include <net/ip.h>
 #include <net/xfrm.h>
 #include <net/esp.h>
@@ -145,10 +144,8 @@ static struct sk_buff *xfrm6_tunnel_gso_segment(struct xfrm_state *x,
 						struct sk_buff *skb,
 						netdev_features_t features)
 {
-	__be16 type = x->inner_mode.family == AF_INET ? htons(ETH_P_IP)
-						      : htons(ETH_P_IPV6);
-
-	return skb_eth_gso_segment(skb, features, type);
+	__skb_push(skb, skb->mac_len);
+	return skb_mac_gso_segment(skb, features);
 }
 
 static struct sk_buff *xfrm6_transport_gso_segment(struct xfrm_state *x,
@@ -345,9 +342,6 @@ static int esp6_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features
 		else
 			xo->seq.low += skb_shinfo(skb)->gso_segs;
 	}
-
-	if (xo->seq.low < seq)
-		xo->seq.hi++;
 
 	esp.seqno = cpu_to_be64(xo->seq.low + ((u64)xo->seq.hi << 32));
 

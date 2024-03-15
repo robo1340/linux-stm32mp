@@ -51,11 +51,7 @@ void mlx5dr_domain_set_peer(struct mlx5dr_domain *dmn,
 			    struct mlx5dr_domain *peer_dmn);
 
 struct mlx5dr_table *
-mlx5dr_table_create(struct mlx5dr_domain *domain, u32 level, u32 flags,
-		    u16 uid);
-
-struct mlx5dr_table *
-mlx5dr_table_get_from_fs_ft(struct mlx5_flow_table *ft);
+mlx5dr_table_create(struct mlx5dr_domain *domain, u32 level, u32 flags);
 
 int mlx5dr_table_destroy(struct mlx5dr_table *table);
 
@@ -93,7 +89,7 @@ mlx5dr_action_create_dest_flow_fw_table(struct mlx5dr_domain *domain,
 
 struct mlx5dr_action *
 mlx5dr_action_create_dest_vport(struct mlx5dr_domain *domain,
-				u16 vport, u8 vhca_id_valid,
+				u32 vport, u8 vhca_id_valid,
 				u16 vhca_id);
 
 struct mlx5dr_action *
@@ -132,14 +128,6 @@ struct mlx5dr_action *mlx5dr_action_create_pop_vlan(void);
 struct mlx5dr_action *
 mlx5dr_action_create_push_vlan(struct mlx5dr_domain *domain, __be32 vlan_hdr);
 
-struct mlx5dr_action *
-mlx5dr_action_create_aso(struct mlx5dr_domain *dmn,
-			 u32 obj_id,
-			 u8 return_reg_id,
-			 u8 aso_type,
-			 u8 init_color,
-			 u8 meter_id);
-
 int mlx5dr_action_destroy(struct mlx5dr_action *action);
 
 static inline bool
@@ -149,7 +137,7 @@ mlx5dr_is_supported(struct mlx5_core_dev *dev)
 	       (MLX5_CAP_ESW_FLOWTABLE_FDB(dev, sw_owner) ||
 		(MLX5_CAP_ESW_FLOWTABLE_FDB(dev, sw_owner_v2) &&
 		 (MLX5_CAP_GEN(dev, steering_format_version) <=
-		  MLX5_STEERING_FORMAT_CONNECTX_7)));
+		  MLX5_STEERING_FORMAT_CONNECTX_6DX)));
 }
 
 /* buddy functions & structure */

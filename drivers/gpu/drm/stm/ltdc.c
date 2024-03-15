@@ -12,7 +12,6 @@
 #include <linux/component.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_graph.h>
@@ -24,16 +23,14 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_blend.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_device.h>
-#include <drm/drm_edid.h>
-#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
-#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_cma_helper.h>
 #include <drm/drm_of.h>
+#include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
@@ -737,11 +734,7 @@ static irqreturn_t ltdc_irq(int irq, void *arg)
 	struct drm_device *ddev = arg;
 	struct ltdc_device *ldev = ddev->dev_private;
 
-	/*
-	 *  Read & Clear the interrupt status
-	 *  In order to write / read registers in this critical section
-	 *  very quickly, the regmap functions are not used.
-	 */
+	/* Read & Clear the interrupt status */
 	ldev->irq_status = readl_relaxed(ldev->regs + LTDC_ISR);
 	writel_relaxed(ldev->irq_status, ldev->regs + LTDC_ICR);
 
@@ -1067,20 +1060,6 @@ static void ltdc_crtc_atomic_flush(struct drm_crtc *crtc,
 	}
 }
 
-static int ltdc_crtc_atomic_check(struct drm_crtc *crtc,
-				  struct drm_atomic_state *state)
-{
-	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
-
-	DRM_DEBUG_ATOMIC("\n");
-
-	/* force a full mode set if active state changed */
-	if (crtc_state->active_changed)
-		crtc_state->mode_changed = true;
-
-	return 0;
-}
-
 static bool ltdc_crtc_get_scanout_position(struct drm_crtc *crtc,
 					   bool in_vblank_irq,
 					   int *vpos, int *hpos,
@@ -1141,7 +1120,6 @@ static const struct drm_crtc_helper_funcs ltdc_crtc_helper_funcs = {
 	.atomic_flush = ltdc_crtc_atomic_flush,
 	.atomic_enable = ltdc_crtc_atomic_enable,
 	.atomic_disable = ltdc_crtc_atomic_disable,
-	.atomic_check = ltdc_crtc_atomic_check,
 	.get_scanout_position = ltdc_crtc_get_scanout_position,
 };
 
@@ -1375,7 +1353,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 	}
 
 	/* Sets the FB address */
-	paddr = (u32)drm_fb_dma_get_gem_addr(fb, newstate, 0);
+	paddr = (u32)drm_fb_cma_get_gem_addr(fb, newstate, 0);
 
 	if (newstate->rotation & DRM_MODE_REFLECT_X)
 		paddr += (fb->format->cpp[0] * (x1 - x0 + 1)) - 1;
@@ -1409,7 +1387,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 			case DRM_FORMAT_NV12:
 			case DRM_FORMAT_NV21:
 			/* Configure the auxiliary frame buffer address 0 */
-			paddr1 = (u32)drm_fb_dma_get_gem_addr(fb, newstate, 1);
+			paddr1 = (u32)drm_fb_cma_get_gem_addr(fb, newstate, 1);
 
 			if (newstate->rotation & DRM_MODE_REFLECT_X)
 				paddr1 += ((fb->format->cpp[1] * (x1 - x0 + 1)) >> 1) - 1;
@@ -1421,8 +1399,8 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 			break;
 			case DRM_FORMAT_YUV420:
 			/* Configure the auxiliary frame buffer address 0 & 1 */
-			paddr1 = (u32)drm_fb_dma_get_gem_addr(fb, newstate, 1);
-			paddr2 = (u32)drm_fb_dma_get_gem_addr(fb, newstate, 2);
+			paddr1 = (u32)drm_fb_cma_get_gem_addr(fb, newstate, 1);
+			paddr2 = (u32)drm_fb_cma_get_gem_addr(fb, newstate, 2);
 
 			if (newstate->rotation & DRM_MODE_REFLECT_X) {
 				paddr1 += ((fb->format->cpp[1] * (x1 - x0 + 1)) >> 1) - 1;
@@ -1439,8 +1417,8 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 			break;
 			case DRM_FORMAT_YVU420:
 			/* Configure the auxiliary frame buffer address 0 & 1 */
-			paddr1 = (u32)drm_fb_dma_get_gem_addr(fb, newstate, 2);
-			paddr2 = (u32)drm_fb_dma_get_gem_addr(fb, newstate, 1);
+			paddr1 = (u32)drm_fb_cma_get_gem_addr(fb, newstate, 2);
+			paddr2 = (u32)drm_fb_cma_get_gem_addr(fb, newstate, 1);
 
 			if (newstate->rotation & DRM_MODE_REFLECT_X) {
 				paddr1 += ((fb->format->cpp[1] * (x1 - x0 + 1)) >> 1) - 1;
@@ -1574,6 +1552,16 @@ static void ltdc_plane_atomic_print_state(struct drm_printer *p,
 	fpsi->counter = 0;
 }
 
+static bool ltdc_plane_format_mod_supported(struct drm_plane *plane,
+					    u32 format,
+					    u64 modifier)
+{
+	if (modifier == DRM_FORMAT_MOD_LINEAR)
+		return true;
+
+	return false;
+}
+
 static const struct drm_plane_funcs ltdc_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
@@ -1582,6 +1570,7 @@ static const struct drm_plane_funcs ltdc_plane_funcs = {
 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
 	.atomic_print_state = ltdc_plane_atomic_print_state,
+	.format_mod_supported = ltdc_plane_format_mod_supported,
 };
 
 static const struct drm_plane_helper_funcs ltdc_plane_helper_funcs = {
@@ -1618,9 +1607,8 @@ static struct drm_plane *ltdc_plane_create(struct drm_device *ddev,
 
 		/* Manage hw-specific capabilities */
 		if (ldev->caps.non_alpha_only_l1)
-			/* XR24 & RX24 like formats supported only on primary layer */
 			if (type != DRM_PLANE_TYPE_PRIMARY && is_xrgb(drm_fmt))
-				continue;
+			continue; /* XR24 & RX24 like formats supported only on primary layer */
 
 		formats[nb_fmt++] = drm_fmt;
 	}
@@ -1966,6 +1954,7 @@ int ltdc_load(struct drm_device *ddev)
 	struct drm_panel *panel;
 	struct drm_crtc *crtc;
 	struct reset_control *rstc;
+	struct resource *res;
 	int irq, i, nb_endpoints;
 	int ret = -ENODEV;
 
@@ -2032,7 +2021,8 @@ int ltdc_load(struct drm_device *ddev)
 		reset_control_deassert(rstc);
 	}
 
-	ldev->regs = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ldev->regs = devm_ioremap_resource(dev, res);
 	if (IS_ERR(ldev->regs)) {
 		DRM_ERROR("Unable to get ltdc registers\n");
 		ret = PTR_ERR(ldev->regs);

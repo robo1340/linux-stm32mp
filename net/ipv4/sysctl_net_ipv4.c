@@ -6,26 +6,38 @@
  * Added /proc/sys/net/ipv4 directory entry (empty =) ). [MS]
  */
 
+#include <linux/mm.h>
+#include <linux/module.h>
 #include <linux/sysctl.h>
+#include <linux/igmp.h>
+#include <linux/inetdevice.h>
 #include <linux/seqlock.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/nsproxy.h>
+#include <linux/swap.h>
+#include <net/snmp.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/ip_fib.h>
+#include <net/route.h>
 #include <net/tcp.h>
 #include <net/udp.h>
 #include <net/cipso_ipv4.h>
+#include <net/inet_frag.h>
 #include <net/ping.h>
 #include <net/protocol.h>
 #include <net/netevent.h>
 
+static int two = 2;
+static int three __maybe_unused = 3;
+static int four = 4;
+static int thousand = 1000;
 static int tcp_retr1_max = 255;
 static int ip_local_port_range_min[] = { 1, 1 };
 static int ip_local_port_range_max[] = { 65535, 65535 };
 static int tcp_adv_win_scale_min = -31;
 static int tcp_adv_win_scale_max = 31;
-static int tcp_app_win_max = 31;
 static int tcp_min_snd_mss_min = TCP_MIN_SND_MSS;
 static int tcp_min_snd_mss_max = 65535;
 static int ip_privileged_port_min;
@@ -40,7 +52,6 @@ static u32 u32_max_div_HZ = UINT_MAX / HZ;
 static int one_day_secs = 24 * 3600;
 static u32 fib_multipath_hash_fields_all_mask __maybe_unused =
 	FIB_MULTIPATH_HASH_FIELD_ALL_MASK;
-static unsigned int tcp_child_ehash_entries_max = 16 * 1024 * 1024;
 
 /* obsolete */
 static int sysctl_tcp_low_latency __read_mostly;
@@ -352,6 +363,61 @@ bad_key:
 	return ret;
 }
 
+static void proc_configure_early_demux(int enabled, int protocol)
+{
+	struct net_protocol *ipprot;
+#if IS_ENABLED(CONFIG_IPV6)
+	struct inet6_protocol *ip6prot;
+#endif
+
+	rcu_read_lock();
+
+	ipprot = rcu_dereference(inet_protos[protocol]);
+	if (ipprot)
+		ipprot->early_demux = enabled ? ipprot->early_demux_handler :
+						NULL;
+
+#if IS_ENABLED(CONFIG_IPV6)
+	ip6prot = rcu_dereference(inet6_protos[protocol]);
+	if (ip6prot)
+		ip6prot->early_demux = enabled ? ip6prot->early_demux_handler :
+						 NULL;
+#endif
+	rcu_read_unlock();
+}
+
+static int proc_tcp_early_demux(struct ctl_table *table, int write,
+				void *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret = 0;
+
+	ret = proc_dou8vec_minmax(table, write, buffer, lenp, ppos);
+
+	if (write && !ret) {
+		int enabled = init_net.ipv4.sysctl_tcp_early_demux;
+
+		proc_configure_early_demux(enabled, IPPROTO_TCP);
+	}
+
+	return ret;
+}
+
+static int proc_udp_early_demux(struct ctl_table *table, int write,
+				void *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret = 0;
+
+	ret = proc_dou8vec_minmax(table, write, buffer, lenp, ppos);
+
+	if (write && !ret) {
+		int enabled = init_net.ipv4.sysctl_udp_early_demux;
+
+		proc_configure_early_demux(enabled, IPPROTO_UDP);
+	}
+
+	return ret;
+}
+
 static int proc_tfo_blackhole_detect_timeout(struct ctl_table *table,
 					     int write, void *buffer,
 					     size_t *lenp, loff_t *ppos)
@@ -382,29 +448,6 @@ static int proc_tcp_available_ulp(struct ctl_table *ctl,
 	kfree(tbl.data);
 
 	return ret;
-}
-
-static int proc_tcp_ehash_entries(struct ctl_table *table, int write,
-				  void *buffer, size_t *lenp, loff_t *ppos)
-{
-	struct net *net = container_of(table->data, struct net,
-				       ipv4.sysctl_tcp_child_ehash_entries);
-	struct inet_hashinfo *hinfo = net->ipv4.tcp_death_row.hashinfo;
-	int tcp_ehash_entries;
-	struct ctl_table tbl;
-
-	tcp_ehash_entries = hinfo->ehash_mask + 1;
-
-	/* A negative number indicates that the child netns
-	 * shares the global ehash.
-	 */
-	if (!net_eq(net, &init_net) && !hinfo->pernet)
-		tcp_ehash_entries *= -1;
-
-	tbl.data = &tcp_ehash_entries;
-	tbl.maxlen = sizeof(int);
-
-	return proc_dointvec(&tbl, write, buffer, lenp, ppos);
 }
 
 #ifdef CONFIG_IP_ROUTE_MULTIPATH
@@ -551,25 +594,28 @@ static struct ctl_table ipv4_table[] = {
 		.extra1		= &sysctl_fib_sync_mem_min,
 		.extra2		= &sysctl_fib_sync_mem_max,
 	},
+	{
+		.procname	= "tcp_rx_skb_cache",
+		.data		= &tcp_rx_skb_cache_key.key,
+		.mode		= 0644,
+		.proc_handler	= proc_do_static_key,
+	},
+	{
+		.procname	= "tcp_tx_skb_cache",
+		.data		= &tcp_tx_skb_cache_key.key,
+		.mode		= 0644,
+		.proc_handler	= proc_do_static_key,
+	},
 	{ }
 };
 
 static struct ctl_table ipv4_net_table[] = {
-	{
-		.procname	= "tcp_max_tw_buckets",
-		.data		= &init_net.ipv4.tcp_death_row.sysctl_max_tw_buckets,
-		.maxlen		= sizeof(int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec
-	},
 	{
 		.procname	= "icmp_echo_ignore_all",
 		.data		= &init_net.ipv4.sysctl_icmp_echo_ignore_all,
 		.maxlen		= sizeof(u8),
 		.mode		= 0644,
 		.proc_handler	= proc_dou8vec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE
 	},
 	{
 		.procname	= "icmp_echo_enable_probe",
@@ -586,8 +632,6 @@ static struct ctl_table ipv4_net_table[] = {
 		.maxlen		= sizeof(u8),
 		.mode		= 0644,
 		.proc_handler	= proc_dou8vec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE
 	},
 	{
 		.procname	= "icmp_ignore_bogus_error_responses",
@@ -676,14 +720,14 @@ static struct ctl_table ipv4_net_table[] = {
 		.data           = &init_net.ipv4.sysctl_udp_early_demux,
 		.maxlen         = sizeof(u8),
 		.mode           = 0644,
-		.proc_handler   = proc_dou8vec_minmax,
+		.proc_handler   = proc_udp_early_demux
 	},
 	{
 		.procname       = "tcp_early_demux",
 		.data           = &init_net.ipv4.sysctl_tcp_early_demux,
 		.maxlen         = sizeof(u8),
 		.mode           = 0644,
-		.proc_handler   = proc_dou8vec_minmax,
+		.proc_handler   = proc_tcp_early_demux
 	},
 	{
 		.procname       = "nexthop_compat_mode",
@@ -983,7 +1027,14 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dou8vec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_TWO,
+		.extra2		= &two,
+	},
+	{
+		.procname	= "tcp_max_tw_buckets",
+		.data		= &init_net.ipv4.tcp_death_row.sysctl_max_tw_buckets,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec
 	},
 	{
 		.procname	= "tcp_max_syn_backlog",
@@ -1036,7 +1087,7 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_fib_multipath_hash_policy,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_THREE,
+		.extra2		= &three,
 	},
 	{
 		.procname	= "fib_multipath_hash_fields",
@@ -1094,7 +1145,7 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dou8vec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_FOUR,
+		.extra2		= &four,
 	},
 	{
 		.procname	= "tcp_recovery",
@@ -1172,8 +1223,6 @@ static struct ctl_table ipv4_net_table[] = {
 		.maxlen		= sizeof(u8),
 		.mode		= 0644,
 		.proc_handler	= proc_dou8vec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= &tcp_app_win_max,
 	},
 	{
 		.procname	= "tcp_adv_win_scale",
@@ -1251,13 +1300,6 @@ static struct ctl_table ipv4_net_table[] = {
 		.extra1		= SYSCTL_ONE,
 	},
 	{
-		.procname	= "tcp_tso_rtt_log",
-		.data		= &init_net.ipv4.sysctl_tcp_tso_rtt_log,
-		.maxlen		= sizeof(u8),
-		.mode		= 0644,
-		.proc_handler	= proc_dou8vec_minmax,
-	},
-	{
 		.procname	= "tcp_min_rtt_wlen",
 		.data		= &init_net.ipv4.sysctl_tcp_min_rtt_wlen,
 		.maxlen		= sizeof(int),
@@ -1289,7 +1331,7 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE_THOUSAND,
+		.extra2		= &thousand,
 	},
 	{
 		.procname	= "tcp_pacing_ca_ratio",
@@ -1298,7 +1340,7 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE_THOUSAND,
+		.extra2		= &thousand,
 	},
 	{
 		.procname	= "tcp_wmem",
@@ -1348,21 +1390,6 @@ static struct ctl_table ipv4_net_table[] = {
 		.extra2         = SYSCTL_ONE,
 	},
 	{
-		.procname	= "tcp_ehash_entries",
-		.data		= &init_net.ipv4.sysctl_tcp_child_ehash_entries,
-		.mode		= 0444,
-		.proc_handler	= proc_tcp_ehash_entries,
-	},
-	{
-		.procname	= "tcp_child_ehash_entries",
-		.data		= &init_net.ipv4.sysctl_tcp_child_ehash_entries,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= &tcp_child_ehash_entries_max,
-	},
-	{
 		.procname	= "udp_rmem_min",
 		.data		= &init_net.ipv4.sysctl_udp_rmem_min,
 		.maxlen		= sizeof(init_net.ipv4.sysctl_udp_rmem_min),
@@ -1385,7 +1412,7 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dou8vec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_TWO,
+		.extra2		= &two,
 	},
 	{ }
 };

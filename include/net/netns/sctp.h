@@ -2,9 +2,6 @@
 #ifndef __NETNS_SCTP_H__
 #define __NETNS_SCTP_H__
 
-#include <linux/timer.h>
-#include <net/snmp.h>
-
 struct sock;
 struct proc_dir_entry;
 struct sctp_mib;

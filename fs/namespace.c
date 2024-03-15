@@ -37,7 +37,7 @@
 #include "internal.h"
 
 /* Maximum number of mounts in a mount namespace */
-static unsigned int sysctl_mount_max __read_mostly = 100000;
+unsigned int sysctl_mount_max __read_mostly = 100000;
 
 static unsigned int m_hash_mask __read_mostly;
 static unsigned int m_hash_shift __read_mostly;
@@ -344,24 +344,8 @@ int __mnt_want_write(struct vfsmount *m)
 	 * incremented count after it has set MNT_WRITE_HOLD.
 	 */
 	smp_mb();
-	might_lock(&mount_lock.lock);
-	while (READ_ONCE(mnt->mnt.mnt_flags) & MNT_WRITE_HOLD) {
-		if (!IS_ENABLED(CONFIG_PREEMPT_RT)) {
-			cpu_relax();
-		} else {
-			/*
-			 * This prevents priority inversion, if the task
-			 * setting MNT_WRITE_HOLD got preempted on a remote
-			 * CPU, and it prevents life lock if the task setting
-			 * MNT_WRITE_HOLD has a lower priority and is bound to
-			 * the same CPU as the task that is spinning here.
-			 */
-			preempt_enable();
-			lock_mount_hash();
-			unlock_mount_hash();
-			preempt_disable();
-		}
-	}
+	while (READ_ONCE(mnt->mnt.mnt_flags) & MNT_WRITE_HOLD)
+		cpu_relax();
 	/*
 	 * After the slowpath clears MNT_WRITE_HOLD, mnt_is_readonly will
 	 * be set to match its requirements. So we must not load that until
@@ -485,24 +469,6 @@ void mnt_drop_write_file(struct file *file)
 }
 EXPORT_SYMBOL(mnt_drop_write_file);
 
-/**
- * mnt_hold_writers - prevent write access to the given mount
- * @mnt: mnt to prevent write access to
- *
- * Prevents write access to @mnt if there are no active writers for @mnt.
- * This function needs to be called and return successfully before changing
- * properties of @mnt that need to remain stable for callers with write access
- * to @mnt.
- *
- * After this functions has been called successfully callers must pair it with
- * a call to mnt_unhold_writers() in order to stop preventing write access to
- * @mnt.
- *
- * Context: This function expects lock_mount_hash() to be held serializing
- *          setting MNT_WRITE_HOLD.
- * Return: On success 0 is returned.
- *	   On error, -EBUSY is returned.
- */
 static inline int mnt_hold_writers(struct mount *mnt)
 {
 	mnt->mnt.mnt_flags |= MNT_WRITE_HOLD;
@@ -534,18 +500,6 @@ static inline int mnt_hold_writers(struct mount *mnt)
 	return 0;
 }
 
-/**
- * mnt_unhold_writers - stop preventing write access to the given mount
- * @mnt: mnt to stop preventing write access to
- *
- * Stop preventing write access to @mnt allowing callers to gain write access
- * to @mnt again.
- *
- * This function can only be called after a successful call to
- * mnt_hold_writers().
- *
- * Context: This function expects lock_mount_hash() to be held.
- */
 static inline void mnt_unhold_writers(struct mount *mnt)
 {
 	/*
@@ -579,9 +533,12 @@ int sb_prepare_remount_readonly(struct super_block *sb)
 	lock_mount_hash();
 	list_for_each_entry(mnt, &sb->s_mounts, mnt_instance) {
 		if (!(mnt->mnt.mnt_flags & MNT_READONLY)) {
-			err = mnt_hold_writers(mnt);
-			if (err)
+			mnt->mnt.mnt_flags |= MNT_WRITE_HOLD;
+			smp_mb();
+			if (mnt_get_writers(mnt) > 0) {
+				err = -EBUSY;
 				break;
+			}
 		}
 	}
 	if (!err && atomic_long_read(&sb->s_remove_count))
@@ -648,7 +605,7 @@ int __legitimize_mnt(struct vfsmount *bastard, unsigned seq)
 }
 
 /* call under rcu_read_lock */
-static bool legitimize_mnt(struct vfsmount *bastard, unsigned seq)
+bool legitimize_mnt(struct vfsmount *bastard, unsigned seq)
 {
 	int res = __legitimize_mnt(bastard, seq);
 	if (likely(!res))
@@ -1760,7 +1717,7 @@ out_unlock:
 /*
  * Is the caller allowed to modify his namespace?
  */
-bool may_mount(void)
+static inline bool may_mount(void)
 {
 	return ns_capable(current->nsproxy->mnt_ns->user_ns, CAP_SYS_ADMIN);
 }
@@ -2112,23 +2069,22 @@ static int invent_group_ids(struct mount *mnt, bool recurse)
 int count_mounts(struct mnt_namespace *ns, struct mount *mnt)
 {
 	unsigned int max = READ_ONCE(sysctl_mount_max);
-	unsigned int mounts = 0;
+	unsigned int mounts = 0, old, pending, sum;
 	struct mount *p;
-
-	if (ns->mounts >= max)
-		return -ENOSPC;
-	max -= ns->mounts;
-	if (ns->pending_mounts >= max)
-		return -ENOSPC;
-	max -= ns->pending_mounts;
 
 	for (p = mnt; p; p = next_mnt(p, mnt))
 		mounts++;
 
-	if (mounts > max)
+	old = ns->mounts;
+	pending = ns->pending_mounts;
+	sum = old + pending;
+	if ((old > sum) ||
+	    (pending > sum) ||
+	    (max < sum) ||
+	    (mounts > (max - sum)))
 		return -ENOSPC;
 
-	ns->pending_mounts += mounts;
+	ns->pending_mounts = pending + mounts;
 	return 0;
 }
 
@@ -2611,7 +2567,6 @@ static void mnt_warn_timestamp_expiry(struct path *mountpoint, struct vfsmount *
 	struct super_block *sb = mnt->mnt_sb;
 
 	if (!__mnt_is_readonly(mnt) &&
-	   (!(sb->s_iflags & SB_I_TS_EXPIRY_WARNED)) &&
 	   (ktime_get_real_seconds() + TIME_UPTIME_SEC_MAX > sb->s_time_max)) {
 		char *buf = (char *)__get_free_page(GFP_KERNEL);
 		char *mntpath = buf ? d_path(mountpoint, buf, PAGE_SIZE) : ERR_PTR(-ENOMEM);
@@ -2626,7 +2581,6 @@ static void mnt_warn_timestamp_expiry(struct path *mountpoint, struct vfsmount *
 			tm.tm_year+1900, (unsigned long long)sb->s_time_max);
 
 		free_page((unsigned long)buf);
-		sb->s_iflags |= SB_I_TS_EXPIRY_WARNED;
 	}
 }
 
@@ -2922,7 +2876,7 @@ static int do_move_mount_old(struct path *path, const char *old_name)
  * add a mount into a namespace's mount tree
  */
 static int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
-			const struct path *path, int mnt_flags)
+			struct path *path, int mnt_flags)
 {
 	struct mount *parent = real_mount(path->mnt);
 
@@ -3045,7 +2999,7 @@ static int do_new_mount(struct path *path, const char *fstype, int sb_flags,
 	return err;
 }
 
-int finish_automount(struct vfsmount *m, const struct path *path)
+int finish_automount(struct vfsmount *m, struct path *path)
 {
 	struct dentry *dentry = path->dentry;
 	struct mountpoint *mp;
@@ -4014,70 +3968,46 @@ static int can_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
 	return 0;
 }
 
-/**
- * mnt_allow_writers() - check whether the attribute change allows writers
- * @kattr: the new mount attributes
- * @mnt: the mount to which @kattr will be applied
- *
- * Check whether thew new mount attributes in @kattr allow concurrent writers.
- *
- * Return: true if writers need to be held, false if not
- */
-static inline bool mnt_allow_writers(const struct mount_kattr *kattr,
-				     const struct mount *mnt)
+static struct mount *mount_setattr_prepare(struct mount_kattr *kattr,
+					   struct mount *mnt, int *err)
 {
-	return (!(kattr->attr_set & MNT_READONLY) ||
-		(mnt->mnt.mnt_flags & MNT_READONLY)) &&
-	       !kattr->mnt_userns;
-}
+	struct mount *m = mnt, *last = NULL;
 
-static int mount_setattr_prepare(struct mount_kattr *kattr, struct mount *mnt)
-{
-	struct mount *m;
-	int err;
-
-	for (m = mnt; m; m = next_mnt(m, mnt)) {
-		if (!can_change_locked_flags(m, recalc_flags(kattr, m))) {
-			err = -EPERM;
-			break;
-		}
-
-		err = can_idmap_mount(kattr, m);
-		if (err)
-			break;
-
-		if (!mnt_allow_writers(kattr, m)) {
-			err = mnt_hold_writers(m);
-			if (err)
-				break;
-		}
-
-		if (!kattr->recurse)
-			return 0;
+	if (!is_mounted(&m->mnt)) {
+		*err = -EINVAL;
+		goto out;
 	}
 
-	if (err) {
-		struct mount *p;
-
-		/*
-		 * If we had to call mnt_hold_writers() MNT_WRITE_HOLD will
-		 * be set in @mnt_flags. The loop unsets MNT_WRITE_HOLD for all
-		 * mounts and needs to take care to include the first mount.
-		 */
-		for (p = mnt; p; p = next_mnt(p, mnt)) {
-			/* If we had to hold writers unblock them. */
-			if (p->mnt.mnt_flags & MNT_WRITE_HOLD)
-				mnt_unhold_writers(p);
-
-			/*
-			 * We're done once the first mount we changed got
-			 * MNT_WRITE_HOLD unset.
-			 */
-			if (p == m)
-				break;
-		}
+	if (!(mnt_has_parent(m) ? check_mnt(m) : is_anon_ns(m->mnt_ns))) {
+		*err = -EINVAL;
+		goto out;
 	}
-	return err;
+
+	do {
+		unsigned int flags;
+
+		flags = recalc_flags(kattr, m);
+		if (!can_change_locked_flags(m, flags)) {
+			*err = -EPERM;
+			goto out;
+		}
+
+		*err = can_idmap_mount(kattr, m);
+		if (*err)
+			goto out;
+
+		last = m;
+
+		if ((kattr->attr_set & MNT_READONLY) &&
+		    !(m->mnt.mnt_flags & MNT_READONLY)) {
+			*err = mnt_hold_writers(m);
+			if (*err)
+				goto out;
+		}
+	} while (kattr->recurse && (m = next_mnt(m, mnt)));
+
+out:
+	return last;
 }
 
 static void do_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
@@ -4105,32 +4035,48 @@ static void do_idmap_mount(const struct mount_kattr *kattr, struct mount *mnt)
 		put_user_ns(old_mnt_userns);
 }
 
-static void mount_setattr_commit(struct mount_kattr *kattr, struct mount *mnt)
+static void mount_setattr_commit(struct mount_kattr *kattr,
+				 struct mount *mnt, struct mount *last,
+				 int err)
 {
-	struct mount *m;
+	struct mount *m = mnt;
 
-	for (m = mnt; m; m = next_mnt(m, mnt)) {
-		unsigned int flags;
+	do {
+		if (!err) {
+			unsigned int flags;
 
-		do_idmap_mount(kattr, m);
-		flags = recalc_flags(kattr, m);
-		WRITE_ONCE(m->mnt.mnt_flags, flags);
+			do_idmap_mount(kattr, m);
+			flags = recalc_flags(kattr, m);
+			WRITE_ONCE(m->mnt.mnt_flags, flags);
+		}
 
-		/* If we had to hold writers unblock them. */
-		if (m->mnt.mnt_flags & MNT_WRITE_HOLD)
+		/*
+		 * We either set MNT_READONLY above so make it visible
+		 * before ~MNT_WRITE_HOLD or we failed to recursively
+		 * apply mount options.
+		 */
+		if ((kattr->attr_set & MNT_READONLY) &&
+		    (m->mnt.mnt_flags & MNT_WRITE_HOLD))
 			mnt_unhold_writers(m);
 
-		if (kattr->propagation)
+		if (!err && kattr->propagation)
 			change_mnt_propagation(m, kattr->propagation);
-		if (!kattr->recurse)
+
+		/*
+		 * On failure, only cleanup until we found the first mount
+		 * we failed to handle.
+		 */
+		if (err && m == last)
 			break;
-	}
-	touch_mnt_namespace(mnt->mnt_ns);
+	} while (kattr->recurse && (m = next_mnt(m, mnt)));
+
+	if (!err)
+		touch_mnt_namespace(mnt->mnt_ns);
 }
 
 static int do_mount_setattr(struct path *path, struct mount_kattr *kattr)
 {
-	struct mount *mnt = real_mount(path->mnt);
+	struct mount *mnt = real_mount(path->mnt), *last = NULL;
 	int err = 0;
 
 	if (path->dentry != mnt->mnt.mnt_root)
@@ -4151,38 +4097,22 @@ static int do_mount_setattr(struct path *path, struct mount_kattr *kattr)
 		}
 	}
 
-	err = -EINVAL;
 	lock_mount_hash();
 
-	/* Ensure that this isn't anything purely vfs internal. */
-	if (!is_mounted(&mnt->mnt))
-		goto out;
-
 	/*
-	 * If this is an attached mount make sure it's located in the callers
-	 * mount namespace. If it's not don't let the caller interact with it.
-	 * If this is a detached mount make sure it has an anonymous mount
-	 * namespace attached to it, i.e. we've created it via OPEN_TREE_CLONE.
+	 * Get the mount tree in a shape where we can change mount
+	 * properties without failure.
 	 */
-	if (!(mnt_has_parent(mnt) ? check_mnt(mnt) : is_anon_ns(mnt->mnt_ns)))
-		goto out;
+	last = mount_setattr_prepare(kattr, mnt, &err);
+	if (last) /* Commit all changes or revert to the old state. */
+		mount_setattr_commit(kattr, mnt, last, err);
 
-	/*
-	 * First, we get the mount tree in a shape where we can change mount
-	 * properties without failure. If we succeeded to do so we commit all
-	 * changes and if we failed we clean up.
-	 */
-	err = mount_setattr_prepare(kattr, mnt);
-	if (!err)
-		mount_setattr_commit(kattr, mnt);
-
-out:
 	unlock_mount_hash();
 
 	if (kattr->propagation) {
+		namespace_unlock();
 		if (err)
 			cleanup_group_ids(mnt, NULL);
-		namespace_unlock();
 	}
 
 	return err;
@@ -4697,25 +4627,3 @@ const struct proc_ns_operations mntns_operations = {
 	.install	= mntns_install,
 	.owner		= mntns_owner,
 };
-
-#ifdef CONFIG_SYSCTL
-static struct ctl_table fs_namespace_sysctls[] = {
-	{
-		.procname	= "mount-max",
-		.data		= &sysctl_mount_max,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ONE,
-	},
-	{ }
-};
-
-static int __init init_fs_namespace_sysctls(void)
-{
-	register_sysctl_init("fs", fs_namespace_sysctls);
-	return 0;
-}
-fs_initcall(init_fs_namespace_sysctls);
-
-#endif /* CONFIG_SYSCTL */

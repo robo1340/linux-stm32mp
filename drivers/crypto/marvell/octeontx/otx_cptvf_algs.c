@@ -1639,8 +1639,11 @@ static void swap_func(void *lptr, void *rptr, int size)
 {
 	struct cpt_device_desc *ldesc = (struct cpt_device_desc *) lptr;
 	struct cpt_device_desc *rdesc = (struct cpt_device_desc *) rptr;
+	struct cpt_device_desc desc;
 
-	swap(*ldesc, *rdesc);
+	desc = *ldesc;
+	*ldesc = *rdesc;
+	*rdesc = desc;
 }
 
 int otx_cpt_crypto_init(struct pci_dev *pdev, struct module *mod,

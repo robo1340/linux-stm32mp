@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright 2019 Collabora Ltd */
 
-#include <linux/completion.h>
-#include <linux/iopoll.h>
-#include <linux/iosys-map.h>
-#include <linux/pm_runtime.h>
-#include <linux/slab.h>
-#include <linux/uaccess.h>
-
 #include <drm/drm_file.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/panfrost_drm.h>
+#include <linux/completion.h>
+#include <linux/dma-buf-map.h>
+#include <linux/iopoll.h>
+#include <linux/pm_runtime.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
 
 #include "panfrost_device.h"
 #include "panfrost_features.h"
@@ -52,8 +51,8 @@ static int panfrost_perfcnt_dump_locked(struct panfrost_device *pfdev)
 
 	reinit_completion(&pfdev->perfcnt->dump_comp);
 	gpuva = pfdev->perfcnt->mapping->mmnode.start << PAGE_SHIFT;
-	gpu_write(pfdev, GPU_PERFCNT_BASE_LO, lower_32_bits(gpuva));
-	gpu_write(pfdev, GPU_PERFCNT_BASE_HI, upper_32_bits(gpuva));
+	gpu_write(pfdev, GPU_PERFCNT_BASE_LO, gpuva);
+	gpu_write(pfdev, GPU_PERFCNT_BASE_HI, gpuva >> 32);
 	gpu_write(pfdev, GPU_INT_CLEAR,
 		  GPU_IRQ_CLEAN_CACHES_COMPLETED |
 		  GPU_IRQ_PERFCNT_SAMPLE_COMPLETED);
@@ -74,7 +73,7 @@ static int panfrost_perfcnt_enable_locked(struct panfrost_device *pfdev,
 {
 	struct panfrost_file_priv *user = file_priv->driver_priv;
 	struct panfrost_perfcnt *perfcnt = pfdev->perfcnt;
-	struct iosys_map map;
+	struct dma_buf_map map;
 	struct drm_gem_shmem_object *bo;
 	u32 cfg, as;
 	int ret;
@@ -182,7 +181,7 @@ static int panfrost_perfcnt_disable_locked(struct panfrost_device *pfdev,
 {
 	struct panfrost_file_priv *user = file_priv->driver_priv;
 	struct panfrost_perfcnt *perfcnt = pfdev->perfcnt;
-	struct iosys_map map = IOSYS_MAP_INIT_VADDR(perfcnt->buf);
+	struct dma_buf_map map = DMA_BUF_MAP_INIT_VADDR(perfcnt->buf);
 
 	if (user != perfcnt->user)
 		return -EINVAL;

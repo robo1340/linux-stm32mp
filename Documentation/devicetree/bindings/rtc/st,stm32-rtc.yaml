@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: STMicroelectronics STM32 Real Time Clock Bindings
 
 maintainers:
-  - Gabriel Fernandez <gabriel.fernandez@foss.st.com>
+  - Gabriel Fernandez <gabriel.fernandez@st.com>
 
 properties:
   compatible:
@@ -159,7 +159,6 @@ examples:
       st,syscfg = <&pwrcfg 0x00 0x100>;
     };
 
-  - |
     #include <dt-bindings/interrupt-controller/arm-gic.h>
     #include <dt-bindings/clock/stm32mp1-clks.h>
     #include <dt-bindings/rtc/rtc-stm32.h>

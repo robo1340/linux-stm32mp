@@ -109,22 +109,14 @@ static int amdgpu_vm_sdma_commit(struct amdgpu_vm_update_params *p,
 	if (p->unlocked) {
 		struct dma_fence *tmp = dma_fence_get(f);
 
-		swap(p->vm->last_unlocked, tmp);
+		swap(p->vm->last_unlocked, f);
 		dma_fence_put(tmp);
 	} else {
-		dma_resv_add_fence(p->vm->root.bo->tbo.base.resv, f,
-				   DMA_RESV_USAGE_BOOKKEEP);
+		amdgpu_bo_fence(p->vm->root.bo, f, true);
 	}
 
-	if (fence && !p->immediate) {
-		/*
-		 * Most hw generations now have a separate queue for page table
-		 * updates, but when the queue is shared with userspace we need
-		 * the extra CPU round trip to correctly flush the TLB.
-		 */
-		set_bit(DRM_SCHED_FENCE_DONT_PIPELINE, &f->flags);
+	if (fence && !p->immediate)
 		swap(*fence, f);
-	}
 	dma_fence_put(f);
 	return 0;
 
@@ -212,22 +204,14 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 	struct amdgpu_bo *bo = &vmbo->bo;
 	enum amdgpu_ib_pool_type pool = p->immediate ? AMDGPU_IB_POOL_IMMEDIATE
 		: AMDGPU_IB_POOL_DELAYED;
-	struct dma_resv_iter cursor;
 	unsigned int i, ndw, nptes;
-	struct dma_fence *fence;
 	uint64_t *pte;
 	int r;
 
 	/* Wait for PD/PT moves to be completed */
-	dma_resv_iter_begin(&cursor, bo->tbo.base.resv, DMA_RESV_USAGE_KERNEL);
-	dma_resv_for_each_fence_unlocked(&cursor, fence) {
-		r = amdgpu_sync_fence(&p->job->sync, fence);
-		if (r) {
-			dma_resv_iter_end(&cursor);
-			return r;
-		}
-	}
-	dma_resv_iter_end(&cursor);
+	r = amdgpu_sync_fence(&p->job->sync, bo->tbo.moving);
+	if (r)
+		return r;
 
 	do {
 		ndw = p->num_dw_left;

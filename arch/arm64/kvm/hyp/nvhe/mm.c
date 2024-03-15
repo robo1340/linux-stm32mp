@@ -8,7 +8,6 @@
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
 #include <asm/kvm_pgtable.h>
-#include <asm/kvm_pkvm.h>
 #include <asm/spectre.h>
 
 #include <nvhe/early_alloc.h>
@@ -19,11 +18,10 @@
 
 struct kvm_pgtable pkvm_pgtable;
 hyp_spinlock_t pkvm_pgd_lock;
+u64 __io_map_base;
 
 struct memblock_region hyp_memory[HYP_MEMBLOCK_REGIONS];
 unsigned int hyp_memblock_nr;
-
-static u64 __io_map_base;
 
 static int __pkvm_create_mappings(unsigned long start, unsigned long size,
 				  unsigned long phys, enum kvm_pgtable_prot prot)
@@ -37,60 +35,36 @@ static int __pkvm_create_mappings(unsigned long start, unsigned long size,
 	return err;
 }
 
-/**
- * pkvm_alloc_private_va_range - Allocates a private VA range.
- * @size:	The size of the VA range to reserve.
- * @haddr:	The hypervisor virtual start address of the allocation.
- *
- * The private virtual address (VA) range is allocated above __io_map_base
- * and aligned based on the order of @size.
- *
- * Return: 0 on success or negative error code on failure.
- */
-int pkvm_alloc_private_va_range(size_t size, unsigned long *haddr)
-{
-	unsigned long base, addr;
-	int ret = 0;
-
-	hyp_spin_lock(&pkvm_pgd_lock);
-
-	/* Align the allocation based on the order of its size */
-	addr = ALIGN(__io_map_base, PAGE_SIZE << get_order(size));
-
-	/* The allocated size is always a multiple of PAGE_SIZE */
-	base = addr + PAGE_ALIGN(size);
-
-	/* Are we overflowing on the vmemmap ? */
-	if (!addr || base > __hyp_vmemmap)
-		ret = -ENOMEM;
-	else {
-		__io_map_base = base;
-		*haddr = addr;
-	}
-
-	hyp_spin_unlock(&pkvm_pgd_lock);
-
-	return ret;
-}
-
-int __pkvm_create_private_mapping(phys_addr_t phys, size_t size,
-				  enum kvm_pgtable_prot prot,
-				  unsigned long *haddr)
+unsigned long __pkvm_create_private_mapping(phys_addr_t phys, size_t size,
+					    enum kvm_pgtable_prot prot)
 {
 	unsigned long addr;
 	int err;
 
+	hyp_spin_lock(&pkvm_pgd_lock);
+
 	size = PAGE_ALIGN(size + offset_in_page(phys));
-	err = pkvm_alloc_private_va_range(size, &addr);
-	if (err)
-		return err;
+	addr = __io_map_base;
+	__io_map_base += size;
 
-	err = __pkvm_create_mappings(addr, size, phys, prot);
-	if (err)
-		return err;
+	/* Are we overflowing on the vmemmap ? */
+	if (__io_map_base > __hyp_vmemmap) {
+		__io_map_base -= size;
+		addr = (unsigned long)ERR_PTR(-ENOMEM);
+		goto out;
+	}
 
-	*haddr = addr + offset_in_page(phys);
-	return err;
+	err = kvm_pgtable_hyp_map(&pkvm_pgtable, addr, size, phys, prot);
+	if (err) {
+		addr = (unsigned long)ERR_PTR(err);
+		goto out;
+	}
+
+	addr = addr + offset_in_page(phys);
+out:
+	hyp_spin_unlock(&pkvm_pgd_lock);
+
+	return addr;
 }
 
 int pkvm_create_mappings_locked(void *from, void *to, enum kvm_pgtable_prot prot)
@@ -170,8 +144,7 @@ int pkvm_cpu_set_vector(enum arm64_hyp_spectre_vector slot)
 int hyp_map_vectors(void)
 {
 	phys_addr_t phys;
-	unsigned long bp_base;
-	int ret;
+	void *bp_base;
 
 	if (!kvm_system_needs_idmapped_vectors()) {
 		__hyp_bp_vect_base = __bp_harden_hyp_vecs;
@@ -179,12 +152,13 @@ int hyp_map_vectors(void)
 	}
 
 	phys = __hyp_pa(__bp_harden_hyp_vecs);
-	ret = __pkvm_create_private_mapping(phys, __BP_HARDEN_HYP_VECS_SZ,
-					    PAGE_HYP_EXEC, &bp_base);
-	if (ret)
-		return ret;
+	bp_base = (void *)__pkvm_create_private_mapping(phys,
+							__BP_HARDEN_HYP_VECS_SZ,
+							PAGE_HYP_EXEC);
+	if (IS_ERR_OR_NULL(bp_base))
+		return PTR_ERR(bp_base);
 
-	__hyp_bp_vect_base = (void *)bp_base;
+	__hyp_bp_vect_base = bp_base;
 
 	return 0;
 }

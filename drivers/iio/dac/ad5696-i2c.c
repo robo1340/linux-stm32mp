@@ -65,9 +65,9 @@ static int ad5686_i2c_probe(struct i2c_client *i2c,
 			    ad5686_i2c_write, ad5686_i2c_read);
 }
 
-static void ad5686_i2c_remove(struct i2c_client *i2c)
+static int ad5686_i2c_remove(struct i2c_client *i2c)
 {
-	ad5686_remove(&i2c->dev);
+	return ad5686_remove(&i2c->dev);
 }
 
 static const struct i2c_device_id ad5686_i2c_id[] = {
@@ -123,4 +123,3 @@ module_i2c_driver(ad5686_i2c_driver);
 MODULE_AUTHOR("Stefan Popa <stefan.popa@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD5686 and similar multi-channel DACs");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS(IIO_AD5686);

@@ -70,9 +70,11 @@ void kvm_vgic_early_init(struct kvm *kvm)
  */
 int kvm_vgic_create(struct kvm *kvm, u32 type)
 {
+	int i, ret;
 	struct kvm_vcpu *vcpu;
-	unsigned long i;
-	int ret;
+
+	if (irqchip_in_kernel(kvm))
+		return -EEXIST;
 
 	/*
 	 * This function is also called by the KVM_CREATE_IRQCHIP handler,
@@ -84,32 +86,22 @@ int kvm_vgic_create(struct kvm *kvm, u32 type)
 		!kvm_vgic_global_state.can_emulate_gicv2)
 		return -ENODEV;
 
-	/* Must be held to avoid race with vCPU creation */
-	lockdep_assert_held(&kvm->lock);
-
 	ret = -EBUSY;
 	if (!lock_all_vcpus(kvm))
 		return ret;
 
-	mutex_lock(&kvm->arch.config_lock);
-
-	if (irqchip_in_kernel(kvm)) {
-		ret = -EEXIST;
-		goto out_unlock;
-	}
-
 	kvm_for_each_vcpu(i, vcpu, kvm) {
-		if (vcpu_has_run_once(vcpu))
+		if (vcpu->arch.has_run_once)
 			goto out_unlock;
 	}
 	ret = 0;
 
 	if (type == KVM_DEV_TYPE_ARM_VGIC_V2)
-		kvm->max_vcpus = VGIC_V2_MAX_CPUS;
+		kvm->arch.max_vcpus = VGIC_V2_MAX_CPUS;
 	else
-		kvm->max_vcpus = VGIC_V3_MAX_CPUS;
+		kvm->arch.max_vcpus = VGIC_V3_MAX_CPUS;
 
-	if (atomic_read(&kvm->online_vcpus) > kvm->max_vcpus) {
+	if (atomic_read(&kvm->online_vcpus) > kvm->arch.max_vcpus) {
 		ret = -E2BIG;
 		goto out_unlock;
 	}
@@ -125,7 +117,6 @@ int kvm_vgic_create(struct kvm *kvm, u32 type)
 		INIT_LIST_HEAD(&kvm->arch.vgic.rd_regions);
 
 out_unlock:
-	mutex_unlock(&kvm->arch.config_lock);
 	unlock_all_vcpus(kvm);
 	return ret;
 }
@@ -143,7 +134,7 @@ static int kvm_vgic_dist_init(struct kvm *kvm, unsigned int nr_spis)
 	struct kvm_vcpu *vcpu0 = kvm_get_vcpu(kvm, 0);
 	int i;
 
-	dist->spis = kcalloc(nr_spis, sizeof(struct vgic_irq), GFP_KERNEL_ACCOUNT);
+	dist->spis = kcalloc(nr_spis, sizeof(struct vgic_irq), GFP_KERNEL);
 	if (!dist->spis)
 		return  -ENOMEM;
 
@@ -235,9 +226,9 @@ int kvm_vgic_vcpu_init(struct kvm_vcpu *vcpu)
 	 * KVM io device for the redistributor that belongs to this VCPU.
 	 */
 	if (dist->vgic_model == KVM_DEV_TYPE_ARM_VGIC_V3) {
-		mutex_lock(&vcpu->kvm->arch.config_lock);
+		mutex_lock(&vcpu->kvm->lock);
 		ret = vgic_register_redist_iodev(vcpu);
-		mutex_unlock(&vcpu->kvm->arch.config_lock);
+		mutex_unlock(&vcpu->kvm->lock);
 	}
 	return ret;
 }
@@ -258,15 +249,13 @@ static void kvm_vgic_vcpu_enable(struct kvm_vcpu *vcpu)
  * The function is generally called when nr_spis has been explicitly set
  * by the guest through the KVM DEVICE API. If not nr_spis is set to 256.
  * vgic_initialized() returns true when this function has succeeded.
+ * Must be called with kvm->lock held!
  */
 int vgic_init(struct kvm *kvm)
 {
 	struct vgic_dist *dist = &kvm->arch.vgic;
 	struct kvm_vcpu *vcpu;
-	int ret = 0, i;
-	unsigned long idx;
-
-	lockdep_assert_held(&kvm->arch.config_lock);
+	int ret = 0, i, idx;
 
 	if (vgic_initialized(kvm))
 		return 0;
@@ -319,7 +308,7 @@ int vgic_init(struct kvm *kvm)
 			goto out;
 	}
 
-	kvm_for_each_vcpu(idx, vcpu, kvm)
+	kvm_for_each_vcpu(i, vcpu, kvm)
 		kvm_vgic_vcpu_enable(vcpu);
 
 	ret = kvm_vgic_setup_default_irq_routing(kvm);
@@ -328,12 +317,7 @@ int vgic_init(struct kvm *kvm)
 
 	vgic_debug_init(kvm);
 
-	/*
-	 * If userspace didn't set the GIC implementation revision,
-	 * default to the latest and greatest. You know want it.
-	 */
-	if (!dist->implementation_rev)
-		dist->implementation_rev = KVM_VGIC_IMP_REV_LATEST;
+	dist->implementation_rev = 2;
 	dist->initialized = true;
 
 out:
@@ -382,12 +366,11 @@ void kvm_vgic_vcpu_destroy(struct kvm_vcpu *vcpu)
 	vgic_cpu->rd_iodev.base_addr = VGIC_ADDR_UNDEF;
 }
 
+/* To be called with kvm->lock held */
 static void __kvm_vgic_destroy(struct kvm *kvm)
 {
 	struct kvm_vcpu *vcpu;
-	unsigned long i;
-
-	lockdep_assert_held(&kvm->arch.config_lock);
+	int i;
 
 	vgic_debug_destroy(kvm);
 
@@ -399,9 +382,9 @@ static void __kvm_vgic_destroy(struct kvm *kvm)
 
 void kvm_vgic_destroy(struct kvm *kvm)
 {
-	mutex_lock(&kvm->arch.config_lock);
+	mutex_lock(&kvm->lock);
 	__kvm_vgic_destroy(kvm);
-	mutex_unlock(&kvm->arch.config_lock);
+	mutex_unlock(&kvm->lock);
 }
 
 /**
@@ -424,9 +407,9 @@ int vgic_lazy_init(struct kvm *kvm)
 		if (kvm->arch.vgic.vgic_model != KVM_DEV_TYPE_ARM_VGIC_V2)
 			return -EBUSY;
 
-		mutex_lock(&kvm->arch.config_lock);
+		mutex_lock(&kvm->lock);
 		ret = vgic_init(kvm);
-		mutex_unlock(&kvm->arch.config_lock);
+		mutex_unlock(&kvm->lock);
 	}
 
 	return ret;
@@ -451,7 +434,7 @@ int kvm_vgic_map_resources(struct kvm *kvm)
 	if (likely(vgic_ready(kvm)))
 		return 0;
 
-	mutex_lock(&kvm->arch.config_lock);
+	mutex_lock(&kvm->lock);
 	if (vgic_ready(kvm))
 		goto out;
 
@@ -469,7 +452,7 @@ int kvm_vgic_map_resources(struct kvm *kvm)
 		dist->ready = true;
 
 out:
-	mutex_unlock(&kvm->arch.config_lock);
+	mutex_unlock(&kvm->lock);
 	return ret;
 }
 

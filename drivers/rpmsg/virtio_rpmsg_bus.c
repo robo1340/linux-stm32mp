@@ -17,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of_device.h>
 #include <linux/rpmsg.h>
 #include <linux/rpmsg/byteorder.h>
 #include <linux/rpmsg/ns.h>
@@ -547,7 +548,7 @@ static void rpmsg_downref_sleepers(struct virtproc_info *vrp)
  * should use the appropriate rpmsg_{try}send{to, _offchannel} API
  * (see include/linux/rpmsg.h).
  *
- * Return: 0 on success and an appropriate error value on failure.
+ * Returns 0 on success and an appropriate error value on failure.
  */
 static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 				     u32 src, u32 dst,
@@ -708,7 +709,6 @@ static ssize_t virtio_rpmsg_get_mtu(struct rpmsg_endpoint *ept)
 static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 			     struct rpmsg_hdr *msg, unsigned int len)
 {
-	struct rpmsg_device *rpdev;
 	struct rpmsg_endpoint *ept;
 	struct scatterlist sg;
 	bool little_endian = virtio_is_little_endian(vrp->vdev);
@@ -741,22 +741,12 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 	ept = idr_find(&vrp->endpoints, __rpmsg32_to_cpu(little_endian, msg->dst));
 
 	/* let's make sure no one deallocates ept while we use it */
-	if (ept) {
+	if (ept)
 		kref_get(&ept->refcount);
-		rpdev = ept->rpdev;
-	}
 
 	mutex_unlock(&vrp->endpoints_lock);
 
 	if (ept) {
-		if (rpdev->ept == ept && rpdev->dst == RPMSG_ADDR_ANY) {
-			/*
-			 * First message received from the remote side,
-			 * update channel destination address.
-			 */
-			rpdev->dst = msg->src;
-		}
-
 		/* make sure ept->cb doesn't go away while we use it */
 		mutex_lock(&ept->cb_lock);
 
@@ -769,7 +759,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 		/* farewell, ept, we don't need you anymore */
 		kref_put(&ept->refcount, __ept_release);
 	} else
-		dev_warn_ratelimited(dev, "msg received with no recipient\n");
+		dev_warn(dev, "msg received with no recipient\n");
 
 	/* publish the real size of the buffer */
 	rpmsg_sg_init(&sg, msg, vrp->buf_size);
@@ -1034,7 +1024,7 @@ static void rpmsg_remove(struct virtio_device *vdev)
 	size_t total_buf_space = vrp->num_bufs * vrp->buf_size;
 	int ret;
 
-	virtio_reset_device(vdev);
+	vdev->config->reset(vdev);
 
 	ret = device_for_each_child(&vdev->dev, NULL, rpmsg_remove_device);
 	if (ret)

@@ -34,8 +34,6 @@ properties:
 
   gpio-controller: true
 
-  gpio-reserved-ranges: true
-
   '#gpio-cells':
     description: Specifying the pin number and flags, as defined in
       include/dt-bindings/gpio/gpio.h
@@ -134,9 +132,6 @@ patternProperties:
       - function
 
     additionalProperties: false
-
-allOf:
-  - $ref: "pinctrl.yaml#"
 
 required:
   - compatible

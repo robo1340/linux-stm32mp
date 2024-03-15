@@ -27,6 +27,7 @@
 #include <linux/sched.h>
 #include <linux/debugfs.h>
 #include <asm/io.h>
+#include <asm/prom.h>
 #include <asm/iommu.h>
 #include <asm/pci-bridge.h>
 #include <asm/machdep.h>
@@ -67,9 +68,11 @@ static void iommu_debugfs_add(struct iommu_table *tbl)
 static void iommu_debugfs_del(struct iommu_table *tbl)
 {
 	char name[10];
+	struct dentry *liobn_entry;
 
 	sprintf(name, "%08lx", tbl->it_index);
-	debugfs_lookup_and_remove(name, iommu_debugfs_dir);
+	liobn_entry = debugfs_lookup(name, iommu_debugfs_dir);
+	debugfs_remove(liobn_entry);
 }
 #else
 static void iommu_debugfs_add(struct iommu_table *tbl){}
@@ -1067,7 +1070,7 @@ extern long iommu_tce_xchg_no_kill(struct mm_struct *mm,
 	long ret;
 	unsigned long size = 0;
 
-	ret = tbl->it_ops->xchg_no_kill(tbl, entry, hpa, direction);
+	ret = tbl->it_ops->xchg_no_kill(tbl, entry, hpa, direction, false);
 	if (!ret && ((*direction == DMA_FROM_DEVICE) ||
 			(*direction == DMA_BIDIRECTIONAL)) &&
 			!mm_iommu_is_devmem(mm, *hpa, tbl->it_page_shift,
@@ -1082,7 +1085,7 @@ void iommu_tce_kill(struct iommu_table *tbl,
 		unsigned long entry, unsigned long pages)
 {
 	if (tbl->it_ops->tce_kill)
-		tbl->it_ops->tce_kill(tbl, entry, pages);
+		tbl->it_ops->tce_kill(tbl, entry, pages, false);
 }
 EXPORT_SYMBOL_GPL(iommu_tce_kill);
 

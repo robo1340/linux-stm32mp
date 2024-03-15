@@ -34,8 +34,10 @@
 #include <linux/ftrace.h>
 #include <linux/kernel_stat.h>
 #include <linux/personality.h>
+#include <linux/random.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/uaccess.h>
+#include <linux/elf-randomize.h>
 #include <linux/pkeys.h>
 #include <linux/seq_buf.h>
 
@@ -43,6 +45,7 @@
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/mmu.h>
+#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/time.h>
 #include <asm/runlatch.h>
@@ -127,7 +130,7 @@ unsigned long notrace msr_check_and_set(unsigned long bits)
 		newmsr |= MSR_VSX;
 
 	if (oldmsr != newmsr)
-		newmsr = mtmsr_isync_irqsafe(newmsr);
+		mtmsr_isync(newmsr);
 
 	return newmsr;
 }
@@ -145,7 +148,7 @@ void notrace __msr_check_and_clear(unsigned long bits)
 		newmsr &= ~MSR_VSX;
 
 	if (oldmsr != newmsr)
-		mtmsr_isync_irqsafe(newmsr);
+		mtmsr_isync(newmsr);
 }
 EXPORT_SYMBOL(__msr_check_and_clear);
 
@@ -304,7 +307,7 @@ static void __giveup_vsx(struct task_struct *tsk)
 	unsigned long msr = tsk->thread.regs->msr;
 
 	/*
-	 * We should never be setting MSR_VSX without also setting
+	 * We should never be ssetting MSR_VSX without also setting
 	 * MSR_FP and MSR_VEC
 	 */
 	WARN_ON((msr & MSR_VSX) && !((msr & MSR_FP) && (msr & MSR_VEC)));
@@ -625,7 +628,7 @@ static void do_break_handler(struct pt_regs *regs)
 {
 	struct arch_hw_breakpoint null_brk = {0};
 	struct arch_hw_breakpoint *info;
-	ppc_inst_t instr = ppc_inst(0);
+	struct ppc_inst instr = ppc_inst(0);
 	int type = 0;
 	int size = 0;
 	unsigned long ea;
@@ -642,7 +645,7 @@ static void do_break_handler(struct pt_regs *regs)
 		return;
 	}
 
-	/* Otherwise find out which DAWR caused exception and disable it. */
+	/* Otherwise findout which DAWR caused exception and disable it. */
 	wp_get_instr_detail(regs, &instr, &type, &size, &ea);
 
 	for (i = 0; i < nr_wp_slots(); i++) {
@@ -1153,40 +1156,6 @@ static inline void save_sprs(struct thread_struct *t)
 #endif
 }
 
-#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
-void kvmppc_save_user_regs(void)
-{
-	unsigned long usermsr;
-
-	if (!current->thread.regs)
-		return;
-
-	usermsr = current->thread.regs->msr;
-
-	if (usermsr & MSR_FP)
-		save_fpu(current);
-
-	if (usermsr & MSR_VEC)
-		save_altivec(current);
-
-#ifdef CONFIG_PPC_TRANSACTIONAL_MEM
-	if (usermsr & MSR_TM) {
-		current->thread.tm_tfhar = mfspr(SPRN_TFHAR);
-		current->thread.tm_tfiar = mfspr(SPRN_TFIAR);
-		current->thread.tm_texasr = mfspr(SPRN_TEXASR);
-		current->thread.regs->msr &= ~MSR_TM;
-	}
-#endif
-}
-EXPORT_SYMBOL_GPL(kvmppc_save_user_regs);
-
-void kvmppc_save_current_sprs(void)
-{
-	save_sprs(&current->thread);
-}
-EXPORT_SYMBOL_GPL(kvmppc_save_current_sprs);
-#endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
-
 static inline void restore_sprs(struct thread_struct *old_thread,
 				struct thread_struct *new_thread)
 {
@@ -1237,7 +1206,7 @@ struct task_struct *__switch_to(struct task_struct *prev,
 {
 	struct thread_struct *new_thread, *old_thread;
 	struct task_struct *last;
-#ifdef CONFIG_PPC_64S_HASH_MMU
+#ifdef CONFIG_PPC_BOOK3S_64
 	struct ppc64_tlb_batch *batch;
 #endif
 
@@ -1246,7 +1215,7 @@ struct task_struct *__switch_to(struct task_struct *prev,
 
 	WARN_ON(!irqs_disabled());
 
-#ifdef CONFIG_PPC_64S_HASH_MMU
+#ifdef CONFIG_PPC_BOOK3S_64
 	batch = this_cpu_ptr(&ppc64_tlb_batch);
 	if (batch->active) {
 		current_thread_info()->local_flags |= _TLF_LAZY_MMU;
@@ -1312,9 +1281,9 @@ struct task_struct *__switch_to(struct task_struct *prev,
 
 	set_return_regs_changed(); /* _switch changes stack (and regs) */
 
-	if (!IS_ENABLED(CONFIG_PPC_BOOK3S_64))
-		kuap_assert_locked();
-
+#ifdef CONFIG_PPC32
+	kuap_assert_locked();
+#endif
 	last = _switch(old_thread, new_thread);
 
 	/*
@@ -1325,7 +1294,6 @@ struct task_struct *__switch_to(struct task_struct *prev,
 	 */
 
 #ifdef CONFIG_PPC_BOOK3S_64
-#ifdef CONFIG_PPC_64S_HASH_MMU
 	/*
 	 * This applies to a process that was context switched while inside
 	 * arch_enter_lazy_mmu_mode(), to re-activate the batch that was
@@ -1337,7 +1305,6 @@ struct task_struct *__switch_to(struct task_struct *prev,
 		batch = this_cpu_ptr(&ppc64_tlb_batch);
 		batch->active = 1;
 	}
-#endif
 
 	/*
 	 * Math facilities are masked out of the child MSR in copy_thread.
@@ -1655,6 +1622,11 @@ EXPORT_SYMBOL_GPL(set_thread_tidr);
 
 #endif /* CONFIG_PPC64 */
 
+void
+release_thread(struct task_struct *t)
+{
+}
+
 /*
  * this gets called so that we can store coprocessor state into memory and
  * copy the current task into the new thread.
@@ -1683,7 +1655,7 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 
 static void setup_ksp_vsid(struct task_struct *p, unsigned long sp)
 {
-#ifdef CONFIG_PPC_64S_HASH_MMU
+#ifdef CONFIG_PPC_BOOK3S_64
 	unsigned long sp_vsid;
 	unsigned long llp = mmu_psize_defs[mmu_linear_psize].sllp;
 
@@ -1708,11 +1680,10 @@ static void setup_ksp_vsid(struct task_struct *p, unsigned long sp)
 /*
  * Copy architecture-specific thread state
  */
-int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
+int copy_thread(unsigned long clone_flags, unsigned long usp,
+		unsigned long kthread_arg, struct task_struct *p,
+		unsigned long tls)
 {
-	unsigned long clone_flags = args->flags;
-	unsigned long usp = args->stack;
-	unsigned long tls = args->tls;
 	struct pt_regs *childregs, *kregs;
 	extern void ret_from_fork(void);
 	extern void ret_from_fork_scv(void);
@@ -1729,18 +1700,18 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 	/* Copy registers */
 	sp -= sizeof(struct pt_regs);
 	childregs = (struct pt_regs *) sp;
-	if (unlikely(args->fn)) {
+	if (unlikely(p->flags & (PF_KTHREAD | PF_IO_WORKER))) {
 		/* kernel thread */
 		memset(childregs, 0, sizeof(struct pt_regs));
 		childregs->gpr[1] = sp + sizeof(struct pt_regs);
 		/* function */
-		if (args->fn)
-			childregs->gpr[14] = ppc_function_entry((void *)args->fn);
+		if (usp)
+			childregs->gpr[14] = ppc_function_entry((void *)usp);
 #ifdef CONFIG_PPC64
 		clear_tsk_thread_flag(p, TIF_32BIT);
 		childregs->softe = IRQS_ENABLED;
 #endif
-		childregs->gpr[15] = (unsigned long)args->fn_arg;
+		childregs->gpr[15] = kthread_arg;
 		p->thread.regs = NULL;	/* no user register state */
 		ti->flags |= _TIF_RESTOREALL;
 		f = ret_from_kernel_thread;
@@ -1795,9 +1766,6 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 #endif
 #if defined(CONFIG_PPC_BOOK3S_32) && defined(CONFIG_PPC_KUAP)
 	p->thread.kuap = KUAP_NONE;
-#endif
-#if defined(CONFIG_BOOKE_OR_40x) && defined(CONFIG_PPC_KUAP)
-	p->thread.pid = MMU_NO_CONTEXT;
 #endif
 
 	setup_ksp_vsid(p, sp);
@@ -2143,10 +2111,13 @@ int validate_sp(unsigned long sp, struct task_struct *p,
 
 EXPORT_SYMBOL(validate_sp);
 
-static unsigned long ___get_wchan(struct task_struct *p)
+static unsigned long __get_wchan(struct task_struct *p)
 {
 	unsigned long ip, sp;
 	int count = 0;
+
+	if (!p || p == current || task_is_running(p))
+		return 0;
 
 	sp = p->thread.ksp;
 	if (!validate_sp(sp, p, STACK_FRAME_OVERHEAD))
@@ -2166,14 +2137,14 @@ static unsigned long ___get_wchan(struct task_struct *p)
 	return 0;
 }
 
-unsigned long __get_wchan(struct task_struct *p)
+unsigned long get_wchan(struct task_struct *p)
 {
 	unsigned long ret;
 
 	if (!try_get_task_stack(p))
 		return 0;
 
-	ret = ___get_wchan(p);
+	ret = __get_wchan(p);
 
 	put_task_stack(p);
 
@@ -2303,6 +2274,46 @@ void notrace __ppc64_runlatch_off(void)
 unsigned long arch_align_stack(unsigned long sp)
 {
 	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
-		sp -= prandom_u32_max(PAGE_SIZE);
+		sp -= get_random_int() & ~PAGE_MASK;
 	return sp & ~0xf;
 }
+
+static inline unsigned long brk_rnd(void)
+{
+        unsigned long rnd = 0;
+
+	/* 8MB for 32bit, 1GB for 64bit */
+	if (is_32bit_task())
+		rnd = (get_random_long() % (1UL<<(23-PAGE_SHIFT)));
+	else
+		rnd = (get_random_long() % (1UL<<(30-PAGE_SHIFT)));
+
+	return rnd << PAGE_SHIFT;
+}
+
+unsigned long arch_randomize_brk(struct mm_struct *mm)
+{
+	unsigned long base = mm->brk;
+	unsigned long ret;
+
+#ifdef CONFIG_PPC_BOOK3S_64
+	/*
+	 * If we are using 1TB segments and we are allowed to randomise
+	 * the heap, we can put it above 1TB so it is backed by a 1TB
+	 * segment. Otherwise the heap will be in the bottom 1TB
+	 * which always uses 256MB segments and this may result in a
+	 * performance penalty. We don't need to worry about radix. For
+	 * radix, mmu_highuser_ssize remains unchanged from 256MB.
+	 */
+	if (!is_32bit_task() && (mmu_highuser_ssize == MMU_SEGSIZE_1T))
+		base = max_t(unsigned long, mm->brk, 1UL << SID_SHIFT_1T);
+#endif
+
+	ret = PAGE_ALIGN(base + brk_rnd());
+
+	if (ret < mm->brk)
+		return mm->brk;
+
+	return ret;
+}
+

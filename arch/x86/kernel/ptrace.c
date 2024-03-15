@@ -13,6 +13,7 @@
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/ptrace.h>
+#include <linux/tracehook.h>
 #include <linux/user.h>
 #include <linux/elf.h>
 #include <linux/security.h>
@@ -28,9 +29,9 @@
 
 #include <linux/uaccess.h>
 #include <asm/processor.h>
+#include <asm/fpu/internal.h>
 #include <asm/fpu/signal.h>
 #include <asm/fpu/regset.h>
-#include <asm/fpu/xstate.h>
 #include <asm/debugreg.h>
 #include <asm/ldt.h>
 #include <asm/desc.h>
@@ -170,9 +171,9 @@ static u16 get_segment_reg(struct task_struct *task, unsigned long offset)
 		retval = *pt_regs_access(task_pt_regs(task), offset);
 	else {
 		if (task == current)
-			savesegment(gs, retval);
+			retval = get_user_gs(task_pt_regs(task));
 		else
-			retval = task->thread.gs;
+			retval = task_user_gs(task);
 	}
 	return retval;
 }
@@ -210,7 +211,7 @@ static int set_segment_reg(struct task_struct *task,
 		break;
 
 	case offsetof(struct user_regs_struct, gs):
-		task->thread.gs = value;
+		task_user_gs(task) = value;
 	}
 
 	return 0;

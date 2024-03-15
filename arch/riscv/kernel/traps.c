@@ -33,29 +33,25 @@ void die(struct pt_regs *regs, const char *str)
 {
 	static int die_counter;
 	int ret;
-	long cause;
-	unsigned long flags;
 
 	oops_enter();
 
-	spin_lock_irqsave(&die_lock, flags);
+	spin_lock_irq(&die_lock);
 	console_verbose();
 	bust_spinlocks(1);
 
 	pr_emerg("%s [#%d]\n", str, ++die_counter);
 	print_modules();
-	if (regs)
-		show_regs(regs);
+	show_regs(regs);
 
-	cause = regs ? regs->cause : -1;
-	ret = notify_die(DIE_OOPS, str, regs, 0, cause, SIGSEGV);
+	ret = notify_die(DIE_OOPS, str, regs, 0, regs->cause, SIGSEGV);
 
-	if (kexec_should_crash(current))
+	if (regs && kexec_should_crash(current))
 		crash_kexec(regs);
 
 	bust_spinlocks(0);
 	add_taint(TAINT_DIE, LOCKDEP_NOW_UNRELIABLE);
-	spin_unlock_irqrestore(&die_lock, flags);
+	spin_unlock_irq(&die_lock);
 	oops_exit();
 
 	if (in_interrupt())
@@ -63,7 +59,7 @@ void die(struct pt_regs *regs, const char *str)
 	if (panic_on_oops)
 		panic("Fatal exception");
 	if (ret != NOTIFY_STOP)
-		make_task_dead(SIGSEGV);
+		do_exit(SIGSEGV);
 }
 
 void do_trap(struct pt_regs *regs, int signo, int code, unsigned long addr)
@@ -95,7 +91,7 @@ static void do_trap_error(struct pt_regs *regs, int signo, int code,
 	}
 }
 
-#if defined(CONFIG_XIP_KERNEL) && defined(CONFIG_RISCV_ALTERNATIVE)
+#if defined (CONFIG_XIP_KERNEL) && defined (CONFIG_RISCV_ERRATA_ALTERNATIVE)
 #define __trap_section		__section(".xip.traps")
 #else
 #define __trap_section
@@ -215,35 +211,17 @@ static DEFINE_PER_CPU(unsigned long [OVERFLOW_STACK_SIZE/sizeof(long)],
  * shadow stack, handled_ kernel_ stack_ overflow(in kernel/entry.S) is used
  * to get per-cpu overflow stack(get_overflow_stack).
  */
-long shadow_stack[SHADOW_OVERFLOW_STACK_SIZE/sizeof(long)] __aligned(16);
+long shadow_stack[SHADOW_OVERFLOW_STACK_SIZE/sizeof(long)];
 asmlinkage unsigned long get_overflow_stack(void)
 {
 	return (unsigned long)this_cpu_ptr(overflow_stack) +
 		OVERFLOW_STACK_SIZE;
 }
 
-/*
- * A pseudo spinlock to protect the shadow stack from being used by multiple
- * harts concurrently.  This isn't a real spinlock because the lock side must
- * be taken without a valid stack and only a single register, it's only taken
- * while in the process of panicing anyway so the performance and error
- * checking a proper spinlock gives us doesn't matter.
- */
-unsigned long spin_shadow_stack;
-
 asmlinkage void handle_bad_stack(struct pt_regs *regs)
 {
 	unsigned long tsk_stk = (unsigned long)current->stack;
 	unsigned long ovf_stk = (unsigned long)this_cpu_ptr(overflow_stack);
-
-	/*
-	 * We're done with the shadow stack by this point, as we're on the
-	 * overflow stack.  Tell any other concurrent overflowing harts that
-	 * they can proceed with panicing by releasing the pseudo-spinlock.
-	 *
-	 * This pairs with an amoswap.aq in handle_kernel_stack_overflow.
-	 */
-	smp_store_release(&spin_shadow_stack, 0);
 
 	console_verbose();
 

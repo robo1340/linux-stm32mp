@@ -62,14 +62,17 @@ static ssize_t audmux_read_file(struct file *file, char __user *user_buf,
 	uintptr_t port = (uintptr_t)file->private_data;
 	u32 pdcr, ptcr;
 
-	ret = clk_prepare_enable(audmux_clk);
-	if (ret)
-		return ret;
+	if (audmux_clk) {
+		ret = clk_prepare_enable(audmux_clk);
+		if (ret)
+			return ret;
+	}
 
 	ptcr = readl(audmux_base + IMX_AUDMUX_V2_PTCR(port));
 	pdcr = readl(audmux_base + IMX_AUDMUX_V2_PDCR(port));
 
-	clk_disable_unprepare(audmux_clk);
+	if (audmux_clk)
+		clk_disable_unprepare(audmux_clk);
 
 	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!buf)
@@ -206,14 +209,17 @@ int imx_audmux_v2_configure_port(unsigned int port, unsigned int ptcr,
 	if (!audmux_base)
 		return -ENOSYS;
 
-	ret = clk_prepare_enable(audmux_clk);
-	if (ret)
-		return ret;
+	if (audmux_clk) {
+		ret = clk_prepare_enable(audmux_clk);
+		if (ret)
+			return ret;
+	}
 
 	writel(ptcr, audmux_base + IMX_AUDMUX_V2_PTCR(port));
 	writel(pdcr, audmux_base + IMX_AUDMUX_V2_PDCR(port));
 
-	clk_disable_unprepare(audmux_clk);
+	if (audmux_clk)
+		clk_disable_unprepare(audmux_clk);
 
 	return 0;
 }

@@ -24,22 +24,17 @@ u8 rxe_get_next_key(u32 last_key)
 
 int mr_check_range(struct rxe_mr *mr, u64 iova, size_t length)
 {
-
-
 	switch (mr->type) {
-	case IB_MR_TYPE_DMA:
+	case RXE_MR_TYPE_DMA:
 		return 0;
 
-	case IB_MR_TYPE_USER:
-	case IB_MR_TYPE_MEM_REG:
-		if (iova < mr->ibmr.iova || length > mr->ibmr.length ||
-		    iova > mr->ibmr.iova + mr->ibmr.length - length)
+	case RXE_MR_TYPE_MR:
+		if (iova < mr->iova || length > mr->length ||
+		    iova > mr->iova + mr->length - length)
 			return -EFAULT;
 		return 0;
 
 	default:
-		pr_warn("%s: mr type (%d) not supported\n",
-			__func__, mr->type);
 		return -EFAULT;
 	}
 }
@@ -50,7 +45,7 @@ int mr_check_range(struct rxe_mr *mr, u64 iova, size_t length)
 
 static void rxe_mr_init(int access, struct rxe_mr *mr)
 {
-	u32 lkey = mr->elem.index << 8 | rxe_get_next_key(-1);
+	u32 lkey = mr->pelem.index << 8 | rxe_get_next_key(-1);
 	u32 rkey = (access & IB_ACCESS_REMOTE) ? lkey : 0;
 
 	/* set ibmr->l/rkey and also copy into private l/rkey
@@ -62,6 +57,7 @@ static void rxe_mr_init(int access, struct rxe_mr *mr)
 	mr->rkey = mr->ibmr.rkey = rkey;
 
 	mr->state = RXE_MR_STATE_INVALID;
+	mr->type = RXE_MR_TYPE_NONE;
 	mr->map_shift = ilog2(RXE_BUF_PER_MAP);
 }
 
@@ -99,21 +95,21 @@ err2:
 		kfree(mr->map[i]);
 
 	kfree(mr->map);
-	mr->map = NULL;
 err1:
 	return -ENOMEM;
 }
 
-void rxe_mr_init_dma(int access, struct rxe_mr *mr)
+void rxe_mr_init_dma(struct rxe_pd *pd, int access, struct rxe_mr *mr)
 {
 	rxe_mr_init(access, mr);
 
+	mr->ibmr.pd = &pd->ibpd;
 	mr->access = access;
 	mr->state = RXE_MR_STATE_VALID;
-	mr->type = IB_MR_TYPE_DMA;
+	mr->type = RXE_MR_TYPE_DMA;
 }
 
-int rxe_mr_init_user(struct rxe_dev *rxe, u64 start, u64 length, u64 iova,
+int rxe_mr_init_user(struct rxe_pd *pd, u64 start, u64 length, u64 iova,
 		     int access, struct rxe_mr *mr)
 {
 	struct rxe_map		**map;
@@ -123,8 +119,9 @@ int rxe_mr_init_user(struct rxe_dev *rxe, u64 start, u64 length, u64 iova,
 	int			num_buf;
 	void			*vaddr;
 	int err;
+	int i;
 
-	umem = ib_umem_get(&rxe->ib_dev, start, length, access);
+	umem = ib_umem_get(pd->ibpd.device, start, length, access);
 	if (IS_ERR(umem)) {
 		pr_warn("%s: Unable to pin memory region err = %d\n",
 			__func__, (int)PTR_ERR(umem));
@@ -163,8 +160,9 @@ int rxe_mr_init_user(struct rxe_dev *rxe, u64 start, u64 length, u64 iova,
 				pr_warn("%s: Unable to get virtual address\n",
 						__func__);
 				err = -ENOMEM;
-				goto err_release_umem;
+				goto err_cleanup_map;
 			}
+
 			buf->addr = (uintptr_t)vaddr;
 			buf->size = PAGE_SIZE;
 			num_buf++;
@@ -173,21 +171,29 @@ int rxe_mr_init_user(struct rxe_dev *rxe, u64 start, u64 length, u64 iova,
 		}
 	}
 
+	mr->ibmr.pd = &pd->ibpd;
 	mr->umem = umem;
 	mr->access = access;
+	mr->length = length;
+	mr->iova = iova;
+	mr->va = start;
 	mr->offset = ib_umem_offset(umem);
 	mr->state = RXE_MR_STATE_VALID;
-	mr->type = IB_MR_TYPE_USER;
+	mr->type = RXE_MR_TYPE_MR;
 
 	return 0;
 
+err_cleanup_map:
+	for (i = 0; i < mr->num_map; i++)
+		kfree(mr->map[i]);
+	kfree(mr->map);
 err_release_umem:
 	ib_umem_release(umem);
 err_out:
 	return err;
 }
 
-int rxe_mr_init_fast(int max_pages, struct rxe_mr *mr)
+int rxe_mr_init_fast(struct rxe_pd *pd, int max_pages, struct rxe_mr *mr)
 {
 	int err;
 
@@ -198,9 +204,10 @@ int rxe_mr_init_fast(int max_pages, struct rxe_mr *mr)
 	if (err)
 		goto err1;
 
+	mr->ibmr.pd = &pd->ibpd;
 	mr->max_buf = max_pages;
 	mr->state = RXE_MR_STATE_FREE;
-	mr->type = IB_MR_TYPE_MEM_REG;
+	mr->type = RXE_MR_TYPE_MR;
 
 	return 0;
 
@@ -211,7 +218,7 @@ err1:
 static void lookup_iova(struct rxe_mr *mr, u64 iova, int *m_out, int *n_out,
 			size_t *offset_out)
 {
-	size_t offset = iova - mr->ibmr.iova + mr->offset;
+	size_t offset = iova - mr->iova + mr->offset;
 	int			map_index;
 	int			buf_index;
 	u64			length;
@@ -299,7 +306,7 @@ int rxe_mr_copy(struct rxe_mr *mr, u64 iova, void *addr, int length,
 	if (length == 0)
 		return 0;
 
-	if (mr->type == IB_MR_TYPE_DMA) {
+	if (mr->type == RXE_MR_TYPE_DMA) {
 		u8 *src, *dest;
 
 		src = (dir == RXE_TO_MR_OBJ) ? addr : ((void *)(uintptr_t)iova);
@@ -398,7 +405,7 @@ int copy_data(
 
 		if (offset >= sge->length) {
 			if (mr) {
-				rxe_put(mr);
+				rxe_drop_ref(mr);
 				mr = NULL;
 			}
 			sge++;
@@ -443,13 +450,13 @@ int copy_data(
 	dma->resid	= resid;
 
 	if (mr)
-		rxe_put(mr);
+		rxe_drop_ref(mr);
 
 	return 0;
 
 err2:
 	if (mr)
-		rxe_put(mr);
+		rxe_drop_ref(mr);
 err1:
 	return err;
 }
@@ -508,7 +515,7 @@ struct rxe_mr *lookup_mr(struct rxe_pd *pd, int access, u32 key,
 		     (type == RXE_LOOKUP_REMOTE && mr->rkey != key) ||
 		     mr_pd(mr) != pd || (access && !(access & mr->access)) ||
 		     mr->state != RXE_MR_STATE_VALID)) {
-		rxe_put(mr);
+		rxe_drop_ref(mr);
 		mr = NULL;
 	}
 
@@ -542,17 +549,11 @@ int rxe_invalidate_mr(struct rxe_qp *qp, u32 key)
 		goto err_drop_ref;
 	}
 
-	if (unlikely(mr->type != IB_MR_TYPE_MEM_REG)) {
-		pr_warn("%s: mr->type (%d) is wrong type\n", __func__, mr->type);
-		ret = -EINVAL;
-		goto err_drop_ref;
-	}
-
 	mr->state = RXE_MR_STATE_FREE;
 	ret = 0;
 
 err_drop_ref:
-	rxe_put(mr);
+	rxe_drop_ref(mr);
 err:
 	return ret;
 }
@@ -594,7 +595,7 @@ int rxe_reg_fast_mr(struct rxe_qp *qp, struct rxe_send_wqe *wqe)
 	mr->access = access;
 	mr->lkey = key;
 	mr->rkey = (access & IB_ACCESS_REMOTE) ? key : 0;
-	mr->ibmr.iova = wqe->wr.wr.reg.mr->iova;
+	mr->iova = wqe->wr.wr.reg.mr->iova;
 	mr->state = RXE_MR_STATE_VALID;
 
 	return 0;
@@ -604,21 +605,25 @@ int rxe_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 {
 	struct rxe_mr *mr = to_rmr(ibmr);
 
-	/* See IBA 10.6.7.2.6 */
-	if (atomic_read(&mr->num_mw) > 0)
+	if (atomic_read(&mr->num_mw) > 0) {
+		pr_warn("%s: Attempt to deregister an MR while bound to MWs\n",
+			__func__);
 		return -EINVAL;
+	}
 
-	rxe_cleanup(mr);
+	mr->state = RXE_MR_STATE_ZOMBIE;
+	rxe_drop_ref(mr_pd(mr));
+	rxe_drop_index(mr);
+	rxe_drop_ref(mr);
 
 	return 0;
 }
 
-void rxe_mr_cleanup(struct rxe_pool_elem *elem)
+void rxe_mr_cleanup(struct rxe_pool_entry *arg)
 {
-	struct rxe_mr *mr = container_of(elem, typeof(*mr), elem);
+	struct rxe_mr *mr = container_of(arg, typeof(*mr), pelem);
 	int i;
 
-	rxe_put(mr_pd(mr));
 	ib_umem_release(mr->umem);
 
 	if (mr->map) {

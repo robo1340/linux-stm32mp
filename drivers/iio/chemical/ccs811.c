@@ -532,22 +532,18 @@ err_poweroff:
 	return ret;
 }
 
-static void ccs811_remove(struct i2c_client *client)
+static int ccs811_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct ccs811_data *data = iio_priv(indio_dev);
-	int ret;
 
 	iio_device_unregister(indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
 	if (data->drdy_trig)
 		iio_trigger_unregister(data->drdy_trig);
 
-	ret = i2c_smbus_write_byte_data(client, CCS811_MEAS_MODE,
-					CCS811_MODE_IDLE);
-	if (ret)
-		dev_warn(&client->dev, "Failed to power down device (%pe)\n",
-			 ERR_PTR(ret));
+	return i2c_smbus_write_byte_data(client, CCS811_MEAS_MODE,
+					 CCS811_MODE_IDLE);
 }
 
 static const struct i2c_device_id ccs811_id[] = {

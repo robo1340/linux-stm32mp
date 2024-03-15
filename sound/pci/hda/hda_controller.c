@@ -1033,8 +1033,10 @@ EXPORT_SYMBOL_GPL(azx_init_chip);
 void azx_stop_all_streams(struct azx *chip)
 {
 	struct hdac_bus *bus = azx_bus(chip);
+	struct hdac_stream *s;
 
-	snd_hdac_stop_streams(bus);
+	list_for_each_entry(s, &bus->stream_list, list)
+		snd_hdac_stream_stop(s);
 }
 EXPORT_SYMBOL_GPL(azx_stop_all_streams);
 
@@ -1231,7 +1233,6 @@ int azx_probe_codecs(struct azx *chip, unsigned int max_slots)
 				continue;
 			codec->jackpoll_interval = chip->jackpoll_interval;
 			codec->beep_mode = chip->beep_mode;
-			codec->ctl_dev_id = chip->ctl_dev_id;
 			codecs++;
 		}
 	}

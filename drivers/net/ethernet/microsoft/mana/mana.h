@@ -48,19 +48,9 @@ enum TRI_STATE {
 
 #define MAX_PORTS_IN_MANA_DEV 256
 
-struct mana_stats_rx {
+struct mana_stats {
 	u64 packets;
 	u64 bytes;
-	u64 xdp_drop;
-	u64 xdp_tx;
-	u64 xdp_redirect;
-	struct u64_stats_sync syncp;
-};
-
-struct mana_stats_tx {
-	u64 packets;
-	u64 bytes;
-	u64 xdp_xmit;
 	struct u64_stats_sync syncp;
 };
 
@@ -86,7 +76,7 @@ struct mana_txq {
 
 	atomic_t pending_sends;
 
-	struct mana_stats_tx stats;
+	struct mana_stats stats;
 };
 
 /* skb data and frags dma mappings */
@@ -299,8 +289,6 @@ struct mana_rxq {
 
 	struct mana_cq rx_cq;
 
-	struct completion fence_event;
-
 	struct net_device *ndev;
 
 	/* Total number of receive buffers to be allocated */
@@ -308,13 +296,7 @@ struct mana_rxq {
 
 	u32 buf_index;
 
-	struct mana_stats_rx stats;
-
-	struct bpf_prog __rcu *bpf_prog;
-	struct xdp_rxq_info xdp_rxq;
-	struct page *xdp_save_page;
-	bool xdp_flush;
-	int xdp_rc; /* XDP redirect return code */
+	struct mana_stats stats;
 
 	/* MUST BE THE LAST MEMBER:
 	 * Each receive buffer has an associated mana_recv_buf_oob.
@@ -371,14 +353,11 @@ struct mana_port_context {
 	/* This points to an array of num_queues of RQ pointers. */
 	struct mana_rxq **rxqs;
 
-	struct bpf_prog *bpf_prog;
-
 	/* Create num_queues EQs, SQs, SQ-CQs, RQs and RQ-CQs, respectively. */
 	unsigned int max_queues;
 	unsigned int num_queues;
 
 	mana_handle_t port_handle;
-	mana_handle_t pf_filter_handle;
 
 	u16 port_idx;
 
@@ -388,7 +367,6 @@ struct mana_port_context {
 	struct mana_ethtool_stats eth_stats;
 };
 
-int mana_start_xmit(struct sk_buff *skb, struct net_device *ndev);
 int mana_config_rss(struct mana_port_context *ac, enum TRI_STATE rx,
 		    bool update_hash, bool update_tab);
 
@@ -396,17 +374,8 @@ int mana_alloc_queues(struct net_device *ndev);
 int mana_attach(struct net_device *ndev);
 int mana_detach(struct net_device *ndev, bool from_close);
 
-int mana_probe(struct gdma_dev *gd, bool resuming);
-void mana_remove(struct gdma_dev *gd, bool suspending);
-
-void mana_xdp_tx(struct sk_buff *skb, struct net_device *ndev);
-int mana_xdp_xmit(struct net_device *ndev, int n, struct xdp_frame **frames,
-		  u32 flags);
-u32 mana_run_xdp(struct net_device *ndev, struct mana_rxq *rxq,
-		 struct xdp_buff *xdp, void *buf_va, uint pkt_len);
-struct bpf_prog *mana_xdp_get(struct mana_port_context *apc);
-void mana_chn_setxdp(struct mana_port_context *apc, struct bpf_prog *prog);
-int mana_bpf(struct net_device *ndev, struct netdev_bpf *bpf);
+int mana_probe(struct gdma_dev *gd);
+void mana_remove(struct gdma_dev *gd);
 
 extern const struct ethtool_ops mana_ethtool_ops;
 
@@ -427,12 +396,6 @@ enum mana_command_code {
 	MANA_FENCE_RQ		= 0x20006,
 	MANA_CONFIG_VPORT_RX	= 0x20007,
 	MANA_QUERY_VPORT_CONFIG	= 0x20008,
-
-	/* Privileged commands for the PF mode */
-	MANA_REGISTER_FILTER	= 0x28000,
-	MANA_DEREGISTER_FILTER	= 0x28001,
-	MANA_REGISTER_HW_PORT	= 0x28003,
-	MANA_DEREGISTER_HW_PORT	= 0x28004,
 };
 
 /* Query Device Configuration */
@@ -557,63 +520,6 @@ struct mana_cfg_rx_steer_req {
 }; /* HW DATA */
 
 struct mana_cfg_rx_steer_resp {
-	struct gdma_resp_hdr hdr;
-}; /* HW DATA */
-
-/* Register HW vPort */
-struct mana_register_hw_vport_req {
-	struct gdma_req_hdr hdr;
-	u16 attached_gfid;
-	u8 is_pf_default_vport;
-	u8 reserved1;
-	u8 allow_all_ether_types;
-	u8 reserved2;
-	u8 reserved3;
-	u8 reserved4;
-}; /* HW DATA */
-
-struct mana_register_hw_vport_resp {
-	struct gdma_resp_hdr hdr;
-	mana_handle_t hw_vport_handle;
-}; /* HW DATA */
-
-/* Deregister HW vPort */
-struct mana_deregister_hw_vport_req {
-	struct gdma_req_hdr hdr;
-	mana_handle_t hw_vport_handle;
-}; /* HW DATA */
-
-struct mana_deregister_hw_vport_resp {
-	struct gdma_resp_hdr hdr;
-}; /* HW DATA */
-
-/* Register filter */
-struct mana_register_filter_req {
-	struct gdma_req_hdr hdr;
-	mana_handle_t vport;
-	u8 mac_addr[6];
-	u8 reserved1;
-	u8 reserved2;
-	u8 reserved3;
-	u8 reserved4;
-	u16 reserved5;
-	u32 reserved6;
-	u32 reserved7;
-	u32 reserved8;
-}; /* HW DATA */
-
-struct mana_register_filter_resp {
-	struct gdma_resp_hdr hdr;
-	mana_handle_t filter_handle;
-}; /* HW DATA */
-
-/* Deregister filter */
-struct mana_deregister_filter_req {
-	struct gdma_req_hdr hdr;
-	mana_handle_t filter_handle;
-}; /* HW DATA */
-
-struct mana_deregister_filter_resp {
 	struct gdma_resp_hdr hdr;
 }; /* HW DATA */
 

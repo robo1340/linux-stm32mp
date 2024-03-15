@@ -318,12 +318,12 @@ static void unpack_block_time(uint64_t v, dm_block_t *b, uint32_t *t)
  */
 typedef int (*run_fn)(struct dm_space_map *, dm_block_t, dm_block_t);
 
-static void with_runs(struct dm_space_map *sm, const __le64 *value_le, unsigned int count, run_fn fn)
+static void with_runs(struct dm_space_map *sm, const __le64 *value_le, unsigned count, run_fn fn)
 {
 	uint64_t b, begin, end;
 	uint32_t t;
 	bool in_run = false;
-	unsigned int i;
+	unsigned i;
 
 	for (i = 0; i < count; i++, value_le++) {
 		/* We know value_le is 8 byte aligned */
@@ -348,13 +348,13 @@ static void with_runs(struct dm_space_map *sm, const __le64 *value_le, unsigned 
 		fn(sm, begin, end);
 }
 
-static void data_block_inc(void *context, const void *value_le, unsigned int count)
+static void data_block_inc(void *context, const void *value_le, unsigned count)
 {
 	with_runs((struct dm_space_map *) context,
 		  (const __le64 *) value_le, count, dm_sm_inc_blocks);
 }
 
-static void data_block_dec(void *context, const void *value_le, unsigned int count)
+static void data_block_dec(void *context, const void *value_le, unsigned count)
 {
 	with_runs((struct dm_space_map *) context,
 		  (const __le64 *) value_le, count, dm_sm_dec_blocks);
@@ -374,21 +374,21 @@ static int data_block_equal(void *context, const void *value1_le, const void *va
 	return b1 == b2;
 }
 
-static void subtree_inc(void *context, const void *value, unsigned int count)
+static void subtree_inc(void *context, const void *value, unsigned count)
 {
 	struct dm_btree_info *info = context;
 	const __le64 *root_le = value;
-	unsigned int i;
+	unsigned i;
 
 	for (i = 0; i < count; i++, root_le++)
 		dm_tm_inc(info->tm, le64_to_cpu(*root_le));
 }
 
-static void subtree_dec(void *context, const void *value, unsigned int count)
+static void subtree_dec(void *context, const void *value, unsigned count)
 {
 	struct dm_btree_info *info = context;
 	const __le64 *root_le = value;
-	unsigned int i;
+	unsigned i;
 
 	for (i = 0; i < count; i++, root_le++)
 		if (dm_btree_del(info, le64_to_cpu(*root_le)))
@@ -448,10 +448,10 @@ static int superblock_lock(struct dm_pool_metadata *pmd,
 static int __superblock_all_zeroes(struct dm_block_manager *bm, int *result)
 {
 	int r;
-	unsigned int i;
+	unsigned i;
 	struct dm_block *b;
 	__le64 *data_le, zero = cpu_to_le64(0);
-	unsigned int block_size = dm_bm_block_size(bm) / sizeof(__le64);
+	unsigned block_size = dm_bm_block_size(bm) / sizeof(__le64);
 
 	/*
 	 * We can't use a validator here - it may be all zeroes.
@@ -549,7 +549,7 @@ static int __write_initial_superblock(struct dm_pool_metadata *pmd)
 	int r;
 	struct dm_block *sblock;
 	struct thin_disk_superblock *disk_super;
-	sector_t bdev_size = bdev_nr_sectors(pmd->bdev);
+	sector_t bdev_size = i_size_read(pmd->bdev->bd_inode) >> SECTOR_SHIFT;
 
 	if (bdev_size > THIN_METADATA_MAX_SECTORS)
 		bdev_size = THIN_METADATA_MAX_SECTORS;
@@ -724,15 +724,6 @@ static int __open_metadata(struct dm_pool_metadata *pmd)
 		goto bad_cleanup_data_sm;
 	}
 
-	/*
-	 * For pool metadata opening process, root setting is redundant
-	 * because it will be set again in __begin_transaction(). But dm
-	 * pool aborting process really needs to get last transaction's
-	 * root to avoid accessing broken btree.
-	 */
-	pmd->root = le64_to_cpu(disk_super->data_mapping_root);
-	pmd->details_root = le64_to_cpu(disk_super->device_details_root);
-
 	__setup_btree_details(pmd);
 	dm_bm_unlock(sblock);
 
@@ -785,15 +776,13 @@ static int __create_persistent_data_objects(struct dm_pool_metadata *pmd, bool f
 	return r;
 }
 
-static void __destroy_persistent_data_objects(struct dm_pool_metadata *pmd,
-					      bool destroy_bm)
+static void __destroy_persistent_data_objects(struct dm_pool_metadata *pmd)
 {
 	dm_sm_destroy(pmd->data_sm);
 	dm_sm_destroy(pmd->metadata_sm);
 	dm_tm_destroy(pmd->nb_tm);
 	dm_tm_destroy(pmd->tm);
-	if (destroy_bm)
-		dm_block_manager_destroy(pmd->bm);
+	dm_block_manager_destroy(pmd->bm);
 }
 
 static int __begin_transaction(struct dm_pool_metadata *pmd)
@@ -971,7 +960,7 @@ struct dm_pool_metadata *dm_pool_metadata_open(struct block_device *bdev,
 int dm_pool_metadata_close(struct dm_pool_metadata *pmd)
 {
 	int r;
-	unsigned int open_devices = 0;
+	unsigned open_devices = 0;
 	struct dm_thin_device *td, *tmp;
 
 	down_read(&pmd->root_lock);
@@ -1000,7 +989,7 @@ int dm_pool_metadata_close(struct dm_pool_metadata *pmd)
 	}
 	pmd_write_unlock(pmd);
 	if (!pmd->fail_io)
-		__destroy_persistent_data_objects(pmd, true);
+		__destroy_persistent_data_objects(pmd);
 
 	kfree(pmd);
 	return 0;
@@ -1676,10 +1665,26 @@ int dm_thin_insert_block(struct dm_thin_device *td, dm_block_t block,
 	return r;
 }
 
+static int __remove(struct dm_thin_device *td, dm_block_t block)
+{
+	int r;
+	struct dm_pool_metadata *pmd = td->pmd;
+	dm_block_t keys[2] = { td->id, block };
+
+	r = dm_btree_remove(&pmd->info, pmd->root, keys, &pmd->root);
+	if (r)
+		return r;
+
+	td->mapped_blocks--;
+	td->changed = true;
+
+	return 0;
+}
+
 static int __remove_range(struct dm_thin_device *td, dm_block_t begin, dm_block_t end)
 {
 	int r;
-	unsigned int count, total_count = 0;
+	unsigned count, total_count = 0;
 	struct dm_pool_metadata *pmd = td->pmd;
 	dm_block_t keys[1] = { td->id };
 	__le64 value;
@@ -1733,6 +1738,18 @@ static int __remove_range(struct dm_thin_device *td, dm_block_t begin, dm_block_
 	value = cpu_to_le64(mapping_root);
 	__dm_bless_for_disk(&value);
 	return dm_btree_insert(&pmd->tl_info, pmd->root, keys, &value, &pmd->root);
+}
+
+int dm_thin_remove_block(struct dm_thin_device *td, dm_block_t block)
+{
+	int r = -EINVAL;
+
+	pmd_write_lock(td->pmd);
+	if (!td->pmd->fail_io)
+		r = __remove(td, block);
+	pmd_write_unlock(td->pmd);
+
+	return r;
 }
 
 int dm_thin_remove_range(struct dm_thin_device *td,
@@ -1871,52 +1888,19 @@ static void __set_abort_with_changes_flags(struct dm_pool_metadata *pmd)
 int dm_pool_abort_metadata(struct dm_pool_metadata *pmd)
 {
 	int r = -EINVAL;
-	struct dm_block_manager *old_bm = NULL, *new_bm = NULL;
-
-	/* fail_io is double-checked with pmd->root_lock held below */
-	if (unlikely(pmd->fail_io))
-		return r;
-
-	/*
-	 * Replacement block manager (new_bm) is created and old_bm destroyed outside of
-	 * pmd root_lock to avoid ABBA deadlock that would result (due to life-cycle of
-	 * shrinker associated with the block manager's bufio client vs pmd root_lock).
-	 * - must take shrinker_rwsem without holding pmd->root_lock
-	 */
-	new_bm = dm_block_manager_create(pmd->bdev, THIN_METADATA_BLOCK_SIZE << SECTOR_SHIFT,
-					 THIN_MAX_CONCURRENT_LOCKS);
 
 	pmd_write_lock(pmd);
-	if (pmd->fail_io) {
-		pmd_write_unlock(pmd);
+	if (pmd->fail_io)
 		goto out;
-	}
 
 	__set_abort_with_changes_flags(pmd);
-	__destroy_persistent_data_objects(pmd, false);
-	old_bm = pmd->bm;
-	if (IS_ERR(new_bm)) {
-		DMERR("could not create block manager during abort");
-		pmd->bm = NULL;
-		r = PTR_ERR(new_bm);
-		goto out_unlock;
-	}
-
-	pmd->bm = new_bm;
-	r = __open_or_format_metadata(pmd, false);
-	if (r) {
-		pmd->bm = NULL;
-		goto out_unlock;
-	}
-	new_bm = NULL;
-out_unlock:
+	__destroy_persistent_data_objects(pmd);
+	r = __create_persistent_data_objects(pmd, false);
 	if (r)
 		pmd->fail_io = true;
-	pmd_write_unlock(pmd);
-	dm_block_manager_destroy(old_bm);
+
 out:
-	if (new_bm && !IS_ERR(new_bm))
-		dm_block_manager_destroy(new_bm);
+	pmd_write_unlock(pmd);
 
 	return r;
 }

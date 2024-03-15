@@ -297,11 +297,12 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	if (data.flags)
 		return -EINVAL;
 
-	shm = tee_shm_alloc_user_buf(ctx, data.size);
+	shm = tee_shm_alloc(ctx, data.size, TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
 
 	data.id = shm->id;
+	data.flags = shm->flags;
 	data.size = shm->size;
 
 	if (copy_to_user(udata, &data, sizeof(data)))
@@ -333,11 +334,13 @@ tee_ioctl_shm_register(struct tee_context *ctx,
 	if (data.flags)
 		return -EINVAL;
 
-	shm = tee_shm_register_user_buf(ctx, data.addr, data.length);
+	shm = tee_shm_register(ctx, data.addr, data.length,
+			       TEE_SHM_DMA_BUF | TEE_SHM_USER_MAPPED);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
 
 	data.id = shm->id;
+	data.flags = shm->flags;
 	data.length = shm->size;
 
 	if (copy_to_user(udata, &data, sizeof(data)))
@@ -351,6 +354,14 @@ tee_ioctl_shm_register(struct tee_context *ctx,
 	 */
 	tee_shm_put(shm);
 	return ret;
+}
+
+static bool param_is_ocall(struct tee_param *param)
+{
+	u64 type = param->attr & TEE_IOCTL_PARAM_ATTR_TYPE_MASK;
+
+	return param->attr & TEE_IOCTL_PARAM_ATTR_OCALL &&
+	       type == TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INOUT;
 }
 
 static int params_from_user(struct tee_context *ctx, struct tee_param *params,
@@ -461,6 +472,33 @@ static int params_to_user(struct tee_ioctl_param __user *uparams,
 	return 0;
 }
 
+static inline int find_ocall_param(struct tee_param *params, u32 num_params,
+				   struct tee_param **normal_params,
+				   u32 *num_normal_params,
+				   struct tee_param **ocall_param)
+{
+	size_t n;
+
+	for (n = 0; n < num_params; n++) {
+		if (param_is_ocall(params + n)) {
+			if (n == 0) {
+				*normal_params = params + 1;
+				*num_normal_params = num_params - 1;
+				*ocall_param = params;
+				return 0;
+			} else {
+				return -EINVAL;
+			}
+		}
+	}
+
+	*normal_params = params;
+	*num_normal_params = num_params;
+	*ocall_param = NULL;
+
+	return 0;
+}
+
 static int tee_ioctl_open_session(struct tee_context *ctx,
 				  struct tee_ioctl_buf_data __user *ubuf)
 {
@@ -508,7 +546,9 @@ static int tee_ioctl_open_session(struct tee_context *ctx,
 		goto out;
 	}
 
-	rc = ctx->teedev->desc->ops->open_session(ctx, &arg, params);
+	rc = ctx->teedev->desc->ops->open_session(ctx, &arg, params,
+						  arg.num_params,
+						  NULL /*ocall_param*/);
 	if (rc)
 		goto out;
 	have_session = true;
@@ -579,7 +619,9 @@ static int tee_ioctl_invoke(struct tee_context *ctx,
 			goto out;
 	}
 
-	rc = ctx->teedev->desc->ops->invoke_func(ctx, &arg, params);
+	rc = ctx->teedev->desc->ops->invoke_func(ctx, &arg, params,
+						 arg.num_params,
+						 NULL /*ocall_param*/);
 	if (rc)
 		goto out;
 
@@ -1073,7 +1115,7 @@ EXPORT_SYMBOL_GPL(tee_device_unregister);
 /**
  * tee_get_drvdata() - Return driver_data pointer
  * @teedev:	Device containing the driver_data pointer
- * @returns the driver_data pointer supplied to tee_device_alloc().
+ * @returns the driver_data pointer supplied to tee_register().
  */
 void *tee_get_drvdata(struct tee_device *teedev)
 {
@@ -1156,9 +1198,22 @@ int tee_client_open_session(struct tee_context *ctx,
 			    struct tee_ioctl_open_session_arg *arg,
 			    struct tee_param *param)
 {
+	struct tee_param *ocall_param = NULL;
+	struct tee_param *normal_params = NULL;
+	u32 num_normal_params = 0;
+	int rc;
+
 	if (!ctx->teedev->desc->ops->open_session)
 		return -EINVAL;
-	return ctx->teedev->desc->ops->open_session(ctx, arg, param);
+
+	rc = find_ocall_param(param, arg->num_params, &normal_params,
+			      &num_normal_params, &ocall_param);
+	if (rc)
+		return rc;
+
+	return ctx->teedev->desc->ops->open_session(ctx, arg, normal_params,
+						    num_normal_params,
+						    ocall_param);
 }
 EXPORT_SYMBOL_GPL(tee_client_open_session);
 
@@ -1170,34 +1225,28 @@ int tee_client_close_session(struct tee_context *ctx, u32 session)
 }
 EXPORT_SYMBOL_GPL(tee_client_close_session);
 
-int tee_client_system_session(struct tee_context *ctx, unsigned int session)
-{
-	if (!ctx->teedev->desc->ops->system_session)
-		return -EINVAL;
-	return ctx->teedev->desc->ops->system_session(ctx, session);
-}
-
 int tee_client_invoke_func(struct tee_context *ctx,
 			   struct tee_ioctl_invoke_arg *arg,
 			   struct tee_param *param)
 {
+	struct tee_param *ocall_param = NULL;
+	struct tee_param *normal_params = NULL;
+	u32 num_normal_params = 0;
+	int rc;
+
 	if (!ctx->teedev->desc->ops->invoke_func)
 		return -EINVAL;
-	return ctx->teedev->desc->ops->invoke_func(ctx, arg, param);
+
+	rc = find_ocall_param(param, arg->num_params, &normal_params,
+			      &num_normal_params, &ocall_param);
+	if (rc)
+		return rc;
+
+	return ctx->teedev->desc->ops->invoke_func(ctx, arg, normal_params,
+						   num_normal_params,
+						   ocall_param);
 }
 EXPORT_SYMBOL_GPL(tee_client_invoke_func);
-
-int tee_client_invoke_func_ocall2(struct tee_context *ctx,
-				  struct tee_ioctl_invoke_arg *arg,
-				  struct tee_param *param,
-				  struct tee_ocall2_arg *ocall_arg)
-{
-	if (!ctx->teedev->desc->ops->invoke_func_ocall2)
-		return -EINVAL;
-	return ctx->teedev->desc->ops->invoke_func_ocall2(ctx, arg, param,
-							  ocall_arg);
-}
-EXPORT_SYMBOL_GPL(tee_client_invoke_func_ocall2);
 
 int tee_client_cancel_req(struct tee_context *ctx,
 			  struct tee_ioctl_cancel_arg *arg)

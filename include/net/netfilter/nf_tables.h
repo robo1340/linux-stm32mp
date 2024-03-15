@@ -105,8 +105,6 @@ struct nft_data {
 	};
 } __attribute__((aligned(__alignof__(u64))));
 
-#define NFT_REG32_NUM		20
-
 /**
  *	struct nft_regs - nf_tables register set
  *
@@ -117,20 +115,9 @@ struct nft_data {
  */
 struct nft_regs {
 	union {
-		u32			data[NFT_REG32_NUM];
+		u32			data[20];
 		struct nft_verdict	verdict;
 	};
-};
-
-struct nft_regs_track {
-	struct {
-		const struct nft_expr		*selector;
-		const struct nft_expr		*bitwise;
-		u8				num_reg;
-	} regs[NFT_REG32_NUM];
-
-	const struct nft_expr			*cur;
-	const struct nft_expr			*last;
 };
 
 /* Store/load an u8, u16 or u64 integer to/from the u32 data register.
@@ -157,24 +144,9 @@ static inline void nft_reg_store16(u32 *dreg, u16 val)
 	*(u16 *)dreg = val;
 }
 
-static inline void nft_reg_store_be16(u32 *dreg, __be16 val)
-{
-	nft_reg_store16(dreg, (__force __u16)val);
-}
-
 static inline u16 nft_reg_load16(const u32 *sreg)
 {
 	return *(u16 *)sreg;
-}
-
-static inline __be16 nft_reg_load_be16(const u32 *sreg)
-{
-	return (__force __be16)nft_reg_load16(sreg);
-}
-
-static inline __be32 nft_reg_load_be32(const u32 *sreg)
-{
-	return *(__force __be32 *)sreg;
 }
 
 static inline void nft_reg_store64(u32 *dreg, u64 val)
@@ -311,29 +283,17 @@ struct nft_set_iter {
 /**
  *	struct nft_set_desc - description of set elements
  *
- *	@ktype: key type
  *	@klen: key length
- *	@dtype: data type
  *	@dlen: data length
- *	@objtype: object type
- *	@flags: flags
  *	@size: number of set elements
- *	@policy: set policy
- *	@gc_int: garbage collector interval
  *	@field_len: length of each field in concatenation, bytes
  *	@field_count: number of concatenated fields in element
  *	@expr: set must support for expressions
  */
 struct nft_set_desc {
-	u32			ktype;
 	unsigned int		klen;
-	u32			dtype;
 	unsigned int		dlen;
-	u32			objtype;
 	unsigned int		size;
-	u32			policy;
-	u32			gc_int;
-	u64			timeout;
 	u8			field_len[NFT_REG32_COUNT];
 	u8			field_count;
 	bool			expr;
@@ -391,8 +351,6 @@ int nft_expr_clone(struct nft_expr *dst, struct nft_expr *src);
 void nft_expr_destroy(const struct nft_ctx *ctx, struct nft_expr *expr);
 int nft_expr_dump(struct sk_buff *skb, unsigned int attr,
 		  const struct nft_expr *expr);
-bool nft_expr_reduce_bitwise(struct nft_regs_track *track,
-			     const struct nft_expr *expr);
 
 struct nft_set_ext;
 
@@ -592,9 +550,7 @@ void *nft_set_catchall_gc(const struct nft_set *set);
 
 static inline unsigned long nft_set_gc_interval(const struct nft_set *set)
 {
-	u32 gc_int = READ_ONCE(set->gc_int);
-
-	return gc_int ? msecs_to_jiffies(gc_int) : HZ;
+	return set->gc_int ? msecs_to_jiffies(set->gc_int) : HZ;
 }
 
 /**
@@ -614,7 +570,6 @@ struct nft_set_binding {
 };
 
 enum nft_trans_phase;
-void nf_tables_activate_set(const struct nft_ctx *ctx, struct nft_set *set);
 void nf_tables_deactivate_set(const struct nft_ctx *ctx, struct nft_set *set,
 			      struct nft_set_binding *binding,
 			      enum nft_trans_phase phase);
@@ -671,7 +626,6 @@ extern const struct nft_set_ext_type nft_set_ext_types[];
 struct nft_set_ext_tmpl {
 	u16	len;
 	u8	offset[NFT_SET_EXT_NUM];
-	u8	ext_len[NFT_SET_EXT_NUM];
 };
 
 /**
@@ -701,8 +655,7 @@ static inline int nft_set_ext_add_length(struct nft_set_ext_tmpl *tmpl, u8 id,
 		return -EINVAL;
 
 	tmpl->offset[id] = tmpl->len;
-	tmpl->ext_len[id] = nft_set_ext_types[id].len + len;
-	tmpl->len	+= tmpl->ext_len[id];
+	tmpl->len	+= nft_set_ext_types[id].len + len;
 
 	return 0;
 }
@@ -940,8 +893,6 @@ struct nft_expr_ops {
 	int				(*validate)(const struct nft_ctx *ctx,
 						    const struct nft_expr *expr,
 						    const struct nft_data **data);
-	bool				(*reduce)(struct nft_regs_track *track,
-						  const struct nft_expr *expr);
 	bool				(*gc)(struct net *net,
 					      const struct nft_expr *expr);
 	int				(*offload)(struct nft_offload_ctx *ctx,
@@ -1032,20 +983,6 @@ static inline void nft_set_elem_update_expr(const struct nft_set_ext *ext,
 
 #define NFT_CHAIN_POLICY_UNSET		U8_MAX
 
-struct nft_rule_dp {
-	u64				is_last:1,
-					dlen:12,
-					handle:42;	/* for tracing */
-	unsigned char			data[]
-		__attribute__((aligned(__alignof__(struct nft_expr))));
-};
-
-struct nft_rule_blob {
-	unsigned long			size;
-	unsigned char			data[]
-		__attribute__((aligned(__alignof__(struct nft_rule_dp))));
-};
-
 /**
  *	struct nft_chain - nf_tables chain
  *
@@ -1059,8 +996,8 @@ struct nft_rule_blob {
  *	@name: name of the chain
  */
 struct nft_chain {
-	struct nft_rule_blob		__rcu *blob_gen_0;
-	struct nft_rule_blob		__rcu *blob_gen_1;
+	struct nft_rule			*__rcu *rules_gen_0;
+	struct nft_rule			*__rcu *rules_gen_1;
 	struct list_head		rules;
 	struct list_head		list;
 	struct rhlist_head		rhlhead;
@@ -1075,14 +1012,10 @@ struct nft_chain {
 	u8				*udata;
 
 	/* Only used during control plane commit phase: */
-	struct nft_rule_blob		*blob_next;
+	struct nft_rule			**rules_next;
 };
 
 int nft_chain_validate(const struct nft_ctx *ctx, const struct nft_chain *chain);
-int nft_setelem_validate(const struct nft_ctx *ctx, struct nft_set *set,
-			 const struct nft_set_iter *iter,
-			 struct nft_set_elem *elem);
-int nft_set_catchall_validate(const struct nft_ctx *ctx, struct nft_set *set);
 
 enum nft_chain_types {
 	NFT_CHAIN_T_DEFAULT = 0,
@@ -1383,28 +1316,24 @@ void nft_unregister_flowtable_type(struct nf_flowtable_type *type);
 /**
  *	struct nft_traceinfo - nft tracing information and state
  *
- *	@trace: other struct members are initialised
- *	@nf_trace: copy of skb->nf_trace before rule evaluation
- *	@type: event type (enum nft_trace_types)
- *	@skbid: hash of skb to be used as trace id
- *	@packet_dumped: packet headers sent in a previous traceinfo message
  *	@pkt: pktinfo currently processed
  *	@basechain: base chain currently processed
  *	@chain: chain currently processed
  *	@rule:  rule that was evaluated
  *	@verdict: verdict given by rule
+ *	@type: event type (enum nft_trace_types)
+ *	@packet_dumped: packet headers sent in a previous traceinfo message
+ *	@trace: other struct members are initialised
  */
 struct nft_traceinfo {
-	bool				trace;
-	bool				nf_trace;
-	bool				packet_dumped;
-	enum nft_trace_types		type:8;
-	u32				skbid;
 	const struct nft_pktinfo	*pkt;
 	const struct nft_base_chain	*basechain;
 	const struct nft_chain		*chain;
-	const struct nft_rule_dp	*rule;
+	const struct nft_rule		*rule;
 	const struct nft_verdict	*verdict;
+	enum nft_trace_types		type;
+	bool				packet_dumped;
+	bool				trace;
 };
 
 void nft_trace_init(struct nft_traceinfo *info, const struct nft_pktinfo *pkt,
@@ -1570,9 +1499,6 @@ struct nft_trans_rule {
 struct nft_trans_set {
 	struct nft_set			*set;
 	u32				set_id;
-	u32				gc_int;
-	u64				timeout;
-	bool				update;
 	bool				bound;
 };
 
@@ -1582,12 +1508,6 @@ struct nft_trans_set {
 	(((struct nft_trans_set *)trans->data)->set_id)
 #define nft_trans_set_bound(trans)	\
 	(((struct nft_trans_set *)trans->data)->bound)
-#define nft_trans_set_update(trans)	\
-	(((struct nft_trans_set *)trans->data)->update)
-#define nft_trans_set_timeout(trans)	\
-	(((struct nft_trans_set *)trans->data)->timeout)
-#define nft_trans_set_gc_int(trans)	\
-	(((struct nft_trans_set *)trans->data)->gc_int)
 
 struct nft_trans_chain {
 	bool				update;
@@ -1690,27 +1610,6 @@ extern unsigned int nf_tables_net_id;
 static inline struct nftables_pernet *nft_pernet(const struct net *net)
 {
 	return net_generic(net, nf_tables_net_id);
-}
-
-#define __NFT_REDUCE_READONLY	1UL
-#define NFT_REDUCE_READONLY	(void *)__NFT_REDUCE_READONLY
-
-static inline bool nft_reduce_is_readonly(const struct nft_expr *expr)
-{
-	return expr->ops->reduce == NFT_REDUCE_READONLY;
-}
-
-void nft_reg_track_update(struct nft_regs_track *track,
-			  const struct nft_expr *expr, u8 dreg, u8 len);
-void nft_reg_track_cancel(struct nft_regs_track *track, u8 dreg, u8 len);
-void __nft_reg_track_cancel(struct nft_regs_track *track, u8 dreg);
-
-static inline bool nft_reg_track_cmp(struct nft_regs_track *track,
-				     const struct nft_expr *expr, u8 dreg)
-{
-	return track->regs[dreg].selector &&
-	       track->regs[dreg].selector->ops == expr->ops &&
-	       track->regs[dreg].num_reg == 0;
 }
 
 #endif /* _NET_NF_TABLES_H */

@@ -23,14 +23,6 @@
 #define QCOM_RPM_SCALING_ENABLE_ID			0x2
 #define QCOM_RPM_XO_MODE_ON				0x2
 
-static const struct clk_parent_data gcc_pxo[] = {
-	{ .fw_name = "pxo", .name = "pxo_board" },
-};
-
-static const struct clk_parent_data gcc_cxo[] = {
-	{ .fw_name = "cxo", .name = "cxo_board" },
-};
-
 #define DEFINE_CLK_RPM(_platform, _name, _active, r_id)			      \
 	static struct clk_rpm _platform##_##_active;			      \
 	static struct clk_rpm _platform##_##_name = {			      \
@@ -40,8 +32,8 @@ static const struct clk_parent_data gcc_cxo[] = {
 		.hw.init = &(struct clk_init_data){			      \
 			.ops = &clk_rpm_ops,				      \
 			.name = #_name,					      \
-			.parent_data = gcc_pxo,				      \
-			.num_parents = ARRAY_SIZE(gcc_pxo),		      \
+			.parent_names = (const char *[]){ "pxo_board" },      \
+			.num_parents = 1,				      \
 		},							      \
 	};								      \
 	static struct clk_rpm _platform##_##_active = {			      \
@@ -52,8 +44,8 @@ static const struct clk_parent_data gcc_cxo[] = {
 		.hw.init = &(struct clk_init_data){			      \
 			.ops = &clk_rpm_ops,				      \
 			.name = #_active,				      \
-			.parent_data = gcc_pxo,				      \
-			.num_parents = ARRAY_SIZE(gcc_pxo),		      \
+			.parent_names = (const char *[]){ "pxo_board" },      \
+			.num_parents = 1,				      \
 		},							      \
 	}
 
@@ -64,8 +56,8 @@ static const struct clk_parent_data gcc_cxo[] = {
 		.hw.init = &(struct clk_init_data){			      \
 			.ops = &clk_rpm_xo_ops,			      \
 			.name = #_name,					      \
-			.parent_data = gcc_cxo,				      \
-			.num_parents = ARRAY_SIZE(gcc_cxo),		      \
+			.parent_names = (const char *[]){ "cxo_board" },      \
+			.num_parents = 1,				      \
 		},							      \
 	}
 
@@ -76,8 +68,8 @@ static const struct clk_parent_data gcc_cxo[] = {
 		.hw.init = &(struct clk_init_data){			      \
 			.ops = &clk_rpm_fixed_ops,			      \
 			.name = #_name,					      \
-			.parent_data = gcc_pxo,				      \
-			.num_parents = ARRAY_SIZE(gcc_pxo),		      \
+			.parent_names = (const char *[]){ "pxo" },	      \
+			.num_parents = 1,				      \
 		},							      \
 	}
 

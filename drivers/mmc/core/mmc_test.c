@@ -10,6 +10,7 @@
 #include <linux/slab.h>
 
 #include <linux/scatterlist.h>
+#include <linux/swap.h>		/* For nr_free_buffer_pages() */
 #include <linux/list.h>
 
 #include <linux/debugfs.h>
@@ -2325,9 +2326,10 @@ static int mmc_test_profile_sglen_r_nonblock_perf(struct mmc_test_card *test)
 static int mmc_test_reset(struct mmc_test_card *test)
 {
 	struct mmc_card *card = test->card;
+	struct mmc_host *host = card->host;
 	int err;
 
-	err = mmc_hw_reset(card);
+	err = mmc_hw_reset(host);
 	if (!err) {
 		/*
 		 * Reset will re-enable the card's command queue, but tests
@@ -3179,8 +3181,7 @@ static int __mmc_test_register_dbgfs_file(struct mmc_card *card,
 	struct mmc_test_dbgfs_file *df;
 
 	if (card->debugfs_root)
-		file = debugfs_create_file(name, mode, card->debugfs_root,
-					   card, fops);
+		debugfs_create_file(name, mode, card->debugfs_root, card, fops);
 
 	df = kmalloc(sizeof(*df), GFP_KERNEL);
 	if (!df) {

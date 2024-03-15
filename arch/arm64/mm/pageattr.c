@@ -21,13 +21,7 @@ bool rodata_full __ro_after_init = IS_ENABLED(CONFIG_RODATA_FULL_DEFAULT_ENABLED
 
 bool can_set_direct_map(void)
 {
-	/*
-	 * rodata_full, DEBUG_PAGEALLOC and KFENCE require linear map to be
-	 * mapped at page granularity, so that it is possible to
-	 * protect/unprotect single pages.
-	 */
-	return (rodata_enabled && rodata_full) || debug_pagealloc_enabled() ||
-		IS_ENABLED(CONFIG_KFENCE);
+	return rodata_full || debug_pagealloc_enabled();
 }
 
 static int change_page_range(pte_t *ptep, unsigned long addr, void *data)
@@ -91,7 +85,7 @@ static int change_memory_common(unsigned long addr, int numpages,
 	 */
 	area = find_vm_area((void *)addr);
 	if (!area ||
-	    end > (unsigned long)kasan_reset_tag(area->addr) + area->size ||
+	    end > (unsigned long)area->addr + area->size ||
 	    !(area->flags & VM_ALLOC))
 		return -EINVAL;
 
@@ -102,8 +96,7 @@ static int change_memory_common(unsigned long addr, int numpages,
 	 * If we are manipulating read-only permissions, apply the same
 	 * change to the linear mapping of the pages that back this VM area.
 	 */
-	if (rodata_enabled &&
-	    rodata_full && (pgprot_val(set_mask) == PTE_RDONLY ||
+	if (rodata_full && (pgprot_val(set_mask) == PTE_RDONLY ||
 			    pgprot_val(clear_mask) == PTE_RDONLY)) {
 		for (i = 0; i < area->nr_pages; i++) {
 			__change_memory_common((u64)page_address(area->pages[i]),

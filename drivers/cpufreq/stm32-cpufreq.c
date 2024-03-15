@@ -14,7 +14,7 @@
 #include <linux/pm_opp.h>
 
 struct stm32_cpufreq_priv {
-	int token;
+	struct opp_table *opps;
 	struct platform_device *cpufreq_dt_pdev;
 };
 
@@ -41,7 +41,9 @@ static int stm32_cpufreq_probe(struct platform_device *pdev)
 	/* Get chip info */
 	ret = nvmem_cell_read_u8(cpu_dev, "part_number", &part_number);
 	if (ret) {
-		dev_err_probe(&pdev->dev, ret, "Failed to get chip info: %d\n", ret);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "Failed to get chip info: %d\n",
+				ret);
 		return ret;
 	}
 
@@ -51,10 +53,12 @@ static int stm32_cpufreq_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
-	priv->token = dev_pm_opp_set_supported_hw(cpu_dev, &supported_hw, 1);
-	if (priv->token < 0) {
-		ret = priv->token;
-		dev_err_probe(&pdev->dev, ret, "Failed to set supported opp: %d\n", ret);
+	priv->opps = dev_pm_opp_set_supported_hw(cpu_dev, &supported_hw, 1);
+	if (IS_ERR(priv->opps)) {
+		ret = PTR_ERR(priv->opps);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "Failed to set supported opp: %d\n",
+				ret);
 		return ret;
 	}
 
@@ -72,7 +76,7 @@ static int stm32_cpufreq_remove(struct platform_device *pdev)
 	struct stm32_cpufreq_priv *priv	= platform_get_drvdata(pdev);
 
 	platform_device_unregister(priv->cpufreq_dt_pdev);
-	dev_pm_opp_put_supported_hw(priv->token);
+	dev_pm_opp_put_supported_hw(priv->opps);
 
 	return 0;
 }

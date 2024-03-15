@@ -250,9 +250,9 @@ struct stm32_spi;
  * @baud_rate_div_min: minimum baud rate divisor
  * @baud_rate_div_max: maximum baud rate divisor
  * @has_fifo: boolean to know if fifo is used for driver
- * @flags: compatible specific SPI controller flags used at registration time
  * @set_slave_udr: routine to configure registers to desired slave underrun
  * behavior (if driver has this functionality)
+ * @flags: compatible specific SPI controller flags used at registration time
  */
 struct stm32_spi_cfg {
 	const struct stm32_spi_regspec *regs;
@@ -273,8 +273,8 @@ struct stm32_spi_cfg {
 	unsigned int baud_rate_div_min;
 	unsigned int baud_rate_div_max;
 	bool has_fifo;
-	u16 flags;
 	void (*set_slave_udr)(struct stm32_spi *spi);
+	u16 flags;
 };
 
 /**
@@ -290,7 +290,6 @@ struct stm32_spi_cfg {
  * @fifo_size: size of the embedded fifo in bytes
  * @cur_midi: master inter-data idleness in ns
  * @cur_speed: speed configured in Hz
- * @cur_half_period: time of a half bit in us
  * @cur_bpw: number of bits in a single SPI data frame
  * @cur_fthlv: fifo threshold level (data frames in a single data packet)
  * @cur_comm: SPI communication mode
@@ -320,7 +319,6 @@ struct stm32_spi {
 
 	unsigned int cur_midi;
 	unsigned int cur_speed;
-	unsigned int cur_half_period;
 	unsigned int cur_bpw;
 	unsigned int cur_fthlv;
 	unsigned int cur_comm;
@@ -467,7 +465,7 @@ static int stm32_spi_prepare_mbr(struct stm32_spi *spi, u32 speed_hz,
 	u32 div, mbrdiv;
 
 	/* Ensure spi->clk_rate is even */
-	div = DIV_ROUND_CLOSEST(spi->clk_rate & ~0x1, speed_hz);
+	div = DIV_ROUND_UP(spi->clk_rate & ~0x1, speed_hz);
 
 	/*
 	 * SPI framework set xfer->speed_hz to ctrl->max_speed_hz if
@@ -486,8 +484,6 @@ static int stm32_spi_prepare_mbr(struct stm32_spi *spi, u32 speed_hz,
 		mbrdiv = fls(div) - 1;
 
 	spi->cur_speed = spi->clk_rate / (1 << mbrdiv);
-
-	spi->cur_half_period = DIV_ROUND_CLOSEST(USEC_PER_SEC, 2 * spi->cur_speed);
 
 	return mbrdiv - 1;
 }
@@ -730,10 +726,6 @@ static void stm32h7_spi_disable(struct stm32_spi *spi)
 		return;
 	}
 
-	/* Add a delay to make sure that transmission is ended. */
-	if (spi->cur_half_period)
-		udelay(spi->cur_half_period);
-
 	if (spi->cur_usedma && spi->dma_tx)
 		dmaengine_terminate_async(spi->dma_tx);
 	if (spi->cur_usedma && spi->dma_rx)
@@ -802,7 +794,7 @@ static irqreturn_t stm32f4_spi_irq_event(int irq, void *dev_id)
 	if (!spi->cur_usedma && (spi->cur_comm == SPI_SIMPLEX_TX ||
 				 spi->cur_comm == SPI_3WIRE_TX)) {
 		/* OVR flag shouldn't be handled for TX only mode */
-		sr &= ~(STM32F4_SPI_SR_OVR | STM32F4_SPI_SR_RXNE);
+		sr &= ~STM32F4_SPI_SR_OVR | STM32F4_SPI_SR_RXNE;
 		mask |= STM32F4_SPI_SR_TXE;
 	}
 
@@ -925,7 +917,6 @@ static irqreturn_t stm32h7_spi_irq_thread(int irq, void *dev_id)
 		static DEFINE_RATELIMIT_STATE(rs,
 					      DEFAULT_RATELIMIT_INTERVAL * 10,
 					      1);
-		ratelimit_set_flags(&rs, RATELIMIT_MSG_ON_RELEASE);
 		if (__ratelimit(&rs))
 			dev_dbg_ratelimited(spi->dev, "Communication suspended\n");
 		if (!spi->cur_usedma && (spi->rx_buf && (spi->rx_len > 0)))
@@ -1036,9 +1027,9 @@ static int stm32_spi_prepare_msg(struct spi_controller *ctrl,
 	if (spi->cfg->set_number_of_data) {
 		int ret;
 
-		ret = spi_split_transfers_maxwords(ctrl, msg,
-						   STM32H7_SPI_TSIZE_MAX,
-						   GFP_KERNEL | GFP_DMA);
+		ret = spi_split_transfers_maxsize(ctrl, msg,
+						  STM32H7_SPI_TSIZE_MAX,
+						  GFP_KERNEL | GFP_DMA);
 		if (ret)
 			return ret;
 	}
@@ -2166,8 +2157,9 @@ static int __maybe_unused stm32_spi_resume(struct device *dev)
 		return ret;
 	}
 
-	ret = pm_runtime_resume_and_get(dev);
+	ret = pm_runtime_get_sync(dev);
 	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
 		dev_err(dev, "Unable to power device:%d\n", ret);
 		return ret;
 	}

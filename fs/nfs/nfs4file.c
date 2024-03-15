@@ -93,7 +93,6 @@ nfs4_file_open(struct inode *inode, struct file *filp)
 	nfs_file_set_open_context(filp, ctx);
 	nfs_fscache_open_file(inode, filp);
 	err = 0;
-	filp->f_mode |= FMODE_CAN_ODIRECT;
 
 out_put_ctx:
 	put_nfs_open_context(ctx);
@@ -168,7 +167,7 @@ retry:
 		if (sync)
 			return -EOPNOTSUPP;
 		cn_resp = kzalloc(sizeof(struct nfs42_copy_notify_res),
-				  GFP_KERNEL);
+				GFP_NOFS);
 		if (unlikely(cn_resp == NULL))
 			return -ENOMEM;
 
@@ -183,8 +182,8 @@ retry:
 	ret = nfs42_proc_copy(file_in, pos_in, file_out, pos_out, count,
 				nss, cnrs, sync);
 out:
-	kfree(cn_resp);
-
+	if (!nfs42_files_from_same_server(file_in, file_out))
+		kfree(cn_resp);
 	if (ret == -EAGAIN)
 		goto retry;
 	return ret;
@@ -329,12 +328,12 @@ static struct file *__nfs42_ssc_open(struct vfsmount *ss_mnt,
 	char *read_name = NULL;
 	int len, status = 0;
 
-	server = NFS_SB(ss_mnt->mnt_sb);
+	server = NFS_SERVER(ss_mnt->mnt_root->d_inode);
 
 	if (!fattr)
 		return ERR_PTR(-ENOMEM);
 
-	status = nfs4_proc_getattr(server, src_fh, fattr, NULL);
+	status = nfs4_proc_getattr(server, src_fh, fattr, NULL, NULL);
 	if (status < 0) {
 		res = ERR_PTR(status);
 		goto out;
@@ -347,24 +346,26 @@ static struct file *__nfs42_ssc_open(struct vfsmount *ss_mnt,
 
 	res = ERR_PTR(-ENOMEM);
 	len = strlen(SSC_READ_NAME_BODY) + 16;
-	read_name = kzalloc(len, GFP_KERNEL);
+	read_name = kzalloc(len, GFP_NOFS);
 	if (read_name == NULL)
 		goto out;
 	snprintf(read_name, len, SSC_READ_NAME_BODY, read_name_gen++);
 
-	r_ino = nfs_fhget(ss_mnt->mnt_sb, src_fh, fattr);
+	r_ino = nfs_fhget(ss_mnt->mnt_root->d_inode->i_sb, src_fh, fattr,
+			NULL);
 	if (IS_ERR(r_ino)) {
 		res = ERR_CAST(r_ino);
 		goto out_free_name;
 	}
 
-	filep = alloc_file_pseudo(r_ino, ss_mnt, read_name, O_RDONLY,
+	filep = alloc_file_pseudo(r_ino, ss_mnt, read_name, FMODE_READ,
 				     r_ino->i_fop);
 	if (IS_ERR(filep)) {
 		res = ERR_CAST(filep);
 		iput(r_ino);
 		goto out_free_name;
 	}
+	filep->f_mode |= FMODE_READ;
 
 	ctx = alloc_nfs_open_context(filep->f_path.dentry, filep->f_mode,
 					filep);

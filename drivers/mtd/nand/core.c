@@ -21,9 +21,6 @@
  */
 bool nanddev_isbad(struct nand_device *nand, const struct nand_pos *pos)
 {
-	if (mtd_check_expert_analysis_mode())
-		return false;
-
 	if (nanddev_bbt_is_initialized(nand)) {
 		unsigned int entry;
 		int status;
@@ -235,9 +232,7 @@ static int nanddev_get_ecc_engine(struct nand_device *nand)
 		nand->ecc.engine = nand_ecc_get_on_die_hw_engine(nand);
 		break;
 	case NAND_ECC_ENGINE_TYPE_ON_HOST:
-		nand->ecc.engine = nand_ecc_get_on_host_hw_engine(nand);
-		if (PTR_ERR(nand->ecc.engine) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
+		pr_err("On-host hardware ECC engines not supported yet\n");
 		break;
 	default:
 		pr_err("Missing ECC engine type\n");
@@ -257,7 +252,7 @@ static int nanddev_put_ecc_engine(struct nand_device *nand)
 {
 	switch (nand->ecc.ctx.conf.engine_type) {
 	case NAND_ECC_ENGINE_TYPE_ON_HOST:
-		nand_ecc_put_on_host_hw_engine(nand);
+		pr_err("On-host hardware ECC engines not supported yet\n");
 		break;
 	case NAND_ECC_ENGINE_TYPE_NONE:
 	case NAND_ECC_ENGINE_TYPE_SOFT:
@@ -302,9 +297,7 @@ int nanddev_ecc_engine_init(struct nand_device *nand)
 	/* Look for the ECC engine to use */
 	ret = nanddev_get_ecc_engine(nand);
 	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			pr_err("No ECC engine found\n");
-
+		pr_err("No ECC engine found\n");
 		return ret;
 	}
 

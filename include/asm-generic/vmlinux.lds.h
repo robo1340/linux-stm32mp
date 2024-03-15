@@ -126,13 +126,13 @@
  */
 #define SCHED_DATA				\
 	STRUCT_ALIGN();				\
-	__sched_class_highest = .;		\
-	*(__stop_sched_class)			\
-	*(__dl_sched_class)			\
-	*(__rt_sched_class)			\
-	*(__fair_sched_class)			\
+	__begin_sched_classes = .;		\
 	*(__idle_sched_class)			\
-	__sched_class_lowest = .;
+	*(__fair_sched_class)			\
+	*(__rt_sched_class)			\
+	*(__dl_sched_class)			\
+	*(__stop_sched_class)			\
+	__end_sched_classes = .;
 
 /* The actual configuration determine if the init/exit sections
  * are handled as text/data or they can be discarded (which
@@ -154,24 +154,6 @@
 #define MEM_DISCARD(sec) *(.mem##sec)
 #endif
 
-#ifndef CONFIG_HAVE_DYNAMIC_FTRACE_NO_PATCHABLE
-#define KEEP_PATCHABLE		KEEP(*(__patchable_function_entries))
-#define PATCHABLE_DISCARDS
-#else
-#define KEEP_PATCHABLE
-#define PATCHABLE_DISCARDS	*(__patchable_function_entries)
-#endif
-
-#ifndef CONFIG_ARCH_SUPPORTS_CFI_CLANG
-/*
- * Simply points to ftrace_stub, but with the proper protocol.
- * Defined by the linker script in linux/vmlinux.lds.h
- */
-#define	FTRACE_STUB_HACK	ftrace_stub_graph = ftrace_stub;
-#else
-#define FTRACE_STUB_HACK
-#endif
-
 #ifdef CONFIG_FTRACE_MCOUNT_RECORD
 /*
  * The ftrace call sites are logged to a section whose name depends on the
@@ -179,21 +161,19 @@
  * FTRACE_CALLSITE_SECTION. We capture all of them here to avoid header
  * dependencies for FTRACE_CALLSITE_SECTION's definition.
  *
- * ftrace_ops_list_func will be defined as arch_ftrace_ops_list_func
- * as some archs will have a different prototype for that function
- * but ftrace_ops_list_func() will have a single prototype.
+ * Need to also make ftrace_stub_graph point to ftrace_stub
+ * so that the same stub location may have different protocols
+ * and not mess up with C verifiers.
  */
 #define MCOUNT_REC()	. = ALIGN(8);				\
 			__start_mcount_loc = .;			\
 			KEEP(*(__mcount_loc))			\
-			KEEP_PATCHABLE				\
+			KEEP(*(__patchable_function_entries))	\
 			__stop_mcount_loc = .;			\
-			FTRACE_STUB_HACK			\
-			ftrace_ops_list_func = arch_ftrace_ops_list_func;
+			ftrace_stub_graph = ftrace_stub;
 #else
 # ifdef CONFIG_FUNCTION_TRACER
-#  define MCOUNT_REC()	FTRACE_STUB_HACK			\
-			ftrace_ops_list_func = arch_ftrace_ops_list_func;
+#  define MCOUNT_REC()	ftrace_stub_graph = ftrace_stub;
 # else
 #  define MCOUNT_REC()
 # endif
@@ -335,6 +315,16 @@
 #define THERMAL_TABLE(name)
 #endif
 
+#ifdef CONFIG_DTPM
+#define DTPM_TABLE()							\
+	. = ALIGN(8);							\
+	__dtpm_table = .;						\
+	KEEP(*(__dtpm_table))						\
+	__dtpm_table_end = .;
+#else
+#define DTPM_TABLE()
+#endif
+
 #define KERNEL_DTB()							\
 	STRUCT_ALIGN();							\
 	__dtb_start = .;						\
@@ -347,7 +337,6 @@
 #define DATA_DATA							\
 	*(.xiptext)							\
 	*(DATA_MAIN)							\
-	*(.data..decrypted)						\
 	*(.ref.data)							\
 	*(.data..shared_aligned) /* percpu related */			\
 	MEM_KEEP(init.data*)						\
@@ -360,9 +349,6 @@
 	*(__tracepoints)						\
 	/* implement dynamic printk debug */				\
 	. = ALIGN(8);							\
-	__start___dyndbg_classes = .;					\
-	KEEP(*(__dyndbg_classes))					\
-	__stop___dyndbg_classes = .;					\
 	__start___dyndbg = .;						\
 	KEEP(*(__dyndbg))						\
 	__stop___dyndbg = .;						\
@@ -412,7 +398,6 @@
 	KEEP(*(__jump_table))						\
 	__stop___jump_table = .;
 
-#ifdef CONFIG_HAVE_STATIC_CALL_INLINE
 #define STATIC_CALL_DATA						\
 	. = ALIGN(8);							\
 	__start_static_call_sites = .;					\
@@ -421,9 +406,6 @@
 	__start_static_call_tramp_key = .;				\
 	KEEP(*(.static_call_tramp_key))					\
 	__stop_static_call_tramp_key = .;
-#else
-#define STATIC_CALL_DATA
-#endif
 
 /*
  * Allow architectures to handle ro_after_init data on their
@@ -437,22 +419,6 @@
 	JUMP_TABLE_DATA							\
 	STATIC_CALL_DATA						\
 	__end_ro_after_init = .;
-#endif
-
-/*
- * .kcfi_traps contains a list KCFI trap locations.
- */
-#ifndef KCFI_TRAPS
-#ifdef CONFIG_ARCH_USES_CFI_TRAPS
-#define KCFI_TRAPS							\
-	__kcfi_traps : AT(ADDR(__kcfi_traps) - LOAD_OFFSET) {		\
-		__start___kcfi_traps = .;				\
-		KEEP(*(.kcfi_traps))					\
-		__stop___kcfi_traps = .;				\
-	}
-#else
-#define KCFI_TRAPS
-#endif
 #endif
 
 /*
@@ -504,7 +470,13 @@
 		__end_pci_fixups_suspend_late = .;			\
 	}								\
 									\
-	FW_LOADER_BUILT_IN_DATA						\
+	/* Built-in firmware blobs */					\
+	.builtin_fw : AT(ADDR(.builtin_fw) - LOAD_OFFSET) ALIGN(8) {	\
+		__start_builtin_fw = .;					\
+		KEEP(*(.builtin_fw))					\
+		__end_builtin_fw = .;					\
+	}								\
+									\
 	TRACEDATA							\
 									\
 	PRINTK_INDEX							\
@@ -563,8 +535,6 @@
 		__stop___modver = .;					\
 	}								\
 									\
-	KCFI_TRAPS							\
-									\
 	RO_EXCEPTION_TABLE						\
 	NOTES								\
 	BTF								\
@@ -572,6 +542,21 @@
 	. = ALIGN((align));						\
 	__end_rodata = .;
 
+
+/*
+ * .text..L.cfi.jumptable.* contain Control-Flow Integrity (CFI)
+ * jump table entries.
+ */
+#ifdef CONFIG_CFI_CLANG
+#define TEXT_CFI_JT							\
+		. = ALIGN(PMD_SIZE);					\
+		__cfi_jt_start = .;					\
+		*(.text..L.cfi.jumptable .text..L.cfi.jumptable.*)	\
+		. = ALIGN(PMD_SIZE);					\
+		__cfi_jt_end = .;
+#else
+#define TEXT_CFI_JT
+#endif
 
 /*
  * Non-instrumentable text section
@@ -600,6 +585,7 @@
 		*(.text..refcount)					\
 		*(.ref.text)						\
 		*(.text.asan.* .text.tsan.*)				\
+		TEXT_CFI_JT						\
 	MEM_KEEP(init.text*)						\
 	MEM_KEEP(exit.text*)						\
 
@@ -737,6 +723,7 @@
 	ACPI_PROBE_TABLE(irqchip)					\
 	ACPI_PROBE_TABLE(timer)						\
 	THERMAL_TABLE(governor)						\
+	DTPM_TABLE()							\
 	EARLYCON_TABLE()						\
 	LSM_TABLE()							\
 	EARLY_LSM_TABLE()						\
@@ -882,28 +869,15 @@
 		KEEP(*(.orc_unwind))					\
 		__stop_orc_unwind = .;					\
 	}								\
-	text_size = _etext - _stext;					\
 	. = ALIGN(4);							\
 	.orc_lookup : AT(ADDR(.orc_lookup) - LOAD_OFFSET) {		\
 		orc_lookup = .;						\
-		. += (((text_size + LOOKUP_BLOCK_SIZE - 1) /		\
+		. += (((SIZEOF(.text) + LOOKUP_BLOCK_SIZE - 1) /	\
 			LOOKUP_BLOCK_SIZE) + 1) * 4;			\
 		orc_lookup_end = .;					\
 	}
 #else
 #define ORC_UNWIND_TABLE
-#endif
-
-/* Built-in firmware blobs */
-#ifdef CONFIG_FW_LOADER
-#define FW_LOADER_BUILT_IN_DATA						\
-	.builtin_fw : AT(ADDR(.builtin_fw) - LOAD_OFFSET) ALIGN(8) {	\
-		__start_builtin_fw = .;					\
-		KEEP(*(.builtin_fw))					\
-		__end_builtin_fw = .;					\
-	}
-#else
-#define FW_LOADER_BUILT_IN_DATA
 #endif
 
 #ifdef CONFIG_PM_TRACE
@@ -929,12 +903,7 @@
 #define PRINTK_INDEX
 #endif
 
-/*
- * Discard .note.GNU-stack, which is emitted as PROGBITS by the compiler.
- * Otherwise, the type of .notes section would become PROGBITS instead of NOTES.
- */
 #define NOTES								\
-	/DISCARD/ : { *(.note.GNU-stack) }				\
 	.notes : AT(ADDR(.notes) - LOAD_OFFSET) {			\
 		__start_notes = .;					\
 		KEEP(*(.note.*))					\
@@ -1001,6 +970,7 @@
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 #define PERCPU_DECRYPTED_SECTION					\
 	. = ALIGN(PAGE_SIZE);						\
+	*(.data..decrypted)						\
 	*(.data..percpu..decrypted)					\
 	. = ALIGN(PAGE_SIZE);
 #else
@@ -1032,7 +1002,8 @@
  * keep any .init_array.* sections.
  * https://bugs.llvm.org/show_bug.cgi?id=46478
  */
-#if defined(CONFIG_GCOV_KERNEL) || defined(CONFIG_KASAN_GENERIC) || defined(CONFIG_KCSAN)
+#if defined(CONFIG_GCOV_KERNEL) || defined(CONFIG_KASAN_GENERIC) || defined(CONFIG_KCSAN) || \
+	defined(CONFIG_CFI_CLANG)
 # ifdef CONFIG_CONSTRUCTORS
 #  define SANITIZER_DISCARDS						\
 	*(.eh_frame)
@@ -1047,7 +1018,6 @@
 
 #define COMMON_DISCARDS							\
 	SANITIZER_DISCARDS						\
-	PATCHABLE_DISCARDS						\
 	*(.discard)							\
 	*(.discard.*)							\
 	*(.modinfo)							\

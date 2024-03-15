@@ -412,13 +412,9 @@ static int set_user_sq_size(struct mlx4_ib_dev *dev,
 			    struct mlx4_ib_qp *qp,
 			    struct mlx4_ib_create_qp *ucmd)
 {
-	u32 cnt;
-
 	/* Sanity check SQ size before proceeding */
-	if (check_shl_overflow(1, ucmd->log_sq_bb_count, &cnt) ||
-	    cnt > dev->dev->caps.max_wqes)
-		return -EINVAL;
-	if (ucmd->log_sq_stride >
+	if ((1 << ucmd->log_sq_bb_count) > dev->dev->caps.max_wqes	 ||
+	    ucmd->log_sq_stride >
 		ilog2(roundup_pow_of_two(dev->dev->caps.max_sq_desc_sz)) ||
 	    ucmd->log_sq_stride < MLX4_IB_MIN_SQ_STRIDE)
 		return -EINVAL;
@@ -1859,7 +1855,7 @@ static int mlx4_set_path(struct mlx4_ib_dev *dev, const struct ib_qp_attr *qp,
 			 u16 vlan_id, u8 *smac)
 {
 	return _mlx4_set_path(dev, &qp->ah_attr,
-			      ether_addr_to_u64(smac),
+			      mlx4_mac_to_u64(smac),
 			      vlan_id,
 			      path, &mqp->pri, port);
 }

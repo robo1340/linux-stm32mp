@@ -1253,21 +1253,22 @@ static int aic3x_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	iface_areg = snd_soc_component_read(component, AIC3X_ASD_INTF_CTRLA) & 0x3f;
 	iface_breg = snd_soc_component_read(component, AIC3X_ASD_INTF_CTRLB) & 0x3f;
 
-	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	/* set master/slave audio interface */
+	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+	case SND_SOC_DAIFMT_CBM_CFM:
 		aic3x->master = 1;
 		iface_areg |= BIT_CLK_MASTER | WORD_CLK_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		aic3x->master = 0;
 		iface_areg &= ~(BIT_CLK_MASTER | WORD_CLK_MASTER);
 		break;
-	case SND_SOC_DAIFMT_CBP_CFC:
+	case SND_SOC_DAIFMT_CBM_CFS:
 		aic3x->master = 1;
 		iface_areg |= BIT_CLK_MASTER;
 		iface_areg &= ~WORD_CLK_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFP:
+	case SND_SOC_DAIFMT_CBS_CFM:
 		aic3x->master = 1;
 		iface_areg |= WORD_CLK_MASTER;
 		iface_areg &= ~BIT_CLK_MASTER;
@@ -1697,6 +1698,7 @@ static const struct snd_soc_component_driver soc_component_dev_aic3x = {
 	.num_dapm_routes	= ARRAY_SIZE(intercon),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 
 static void aic3x_configure_ocmv(struct device *dev, struct aic3x_priv *aic3x)
@@ -1868,7 +1870,7 @@ err:
 }
 EXPORT_SYMBOL(aic3x_probe);
 
-void aic3x_remove(struct device *dev)
+int aic3x_remove(struct device *dev)
 {
 	struct aic3x_priv *aic3x = dev_get_drvdata(dev);
 
@@ -1879,6 +1881,7 @@ void aic3x_remove(struct device *dev)
 		gpio_set_value(aic3x->gpio_reset, 0);
 		gpio_free(aic3x->gpio_reset);
 	}
+	return 0;
 }
 EXPORT_SYMBOL(aic3x_remove);
 

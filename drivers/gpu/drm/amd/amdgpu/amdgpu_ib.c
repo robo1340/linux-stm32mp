@@ -155,19 +155,19 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 		fence_ctx = 0;
 	}
 
-	if (!ring->sched.ready && !ring->is_mes_queue) {
+	if (!ring->sched.ready) {
 		dev_err(adev->dev, "couldn't schedule ib on ring <%s>\n", ring->name);
 		return -EINVAL;
 	}
 
-	if (vm && !job->vmid && !ring->is_mes_queue) {
+	if (vm && !job->vmid) {
 		dev_err(adev->dev, "VM IB without ID\n");
 		return -EINVAL;
 	}
 
 	if ((ib->flags & AMDGPU_IB_FLAGS_SECURE) &&
-	    (!ring->funcs->secure_submission_supported)) {
-		dev_err(adev->dev, "secure submissions not supported on ring <%s>\n", ring->name);
+	    (ring->funcs->type == AMDGPU_RING_TYPE_COMPUTE)) {
+		dev_err(adev->dev, "secure submissions not supported on compute rings\n");
 		return -EINVAL;
 	}
 
@@ -300,15 +300,20 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
  */
 int amdgpu_ib_pool_init(struct amdgpu_device *adev)
 {
+	unsigned size;
 	int r, i;
 
 	if (adev->ib_pool_ready)
 		return 0;
 
 	for (i = 0; i < AMDGPU_IB_POOL_MAX; i++) {
+		if (i == AMDGPU_IB_POOL_DIRECT)
+			size = PAGE_SIZE * 6;
+		else
+			size = AMDGPU_IB_POOL_SIZE;
+
 		r = amdgpu_sa_bo_manager_init(adev, &adev->ib_pools[i],
-					      AMDGPU_IB_POOL_SIZE,
-					      AMDGPU_GPU_PAGE_SIZE,
+					      size, AMDGPU_GPU_PAGE_SIZE,
 					      AMDGPU_GEM_DOMAIN_GTT);
 		if (r)
 			goto error;
@@ -388,10 +393,6 @@ int amdgpu_ib_ring_tests(struct amdgpu_device *adev)
 		 * to them and they have no interrupt support.
 		 */
 		if (!ring->sched.ready || !ring->funcs->test_ib)
-			continue;
-
-		if (adev->enable_mes &&
-		    ring->funcs->type == AMDGPU_RING_TYPE_KIQ)
 			continue;
 
 		/* MM engine need more time */

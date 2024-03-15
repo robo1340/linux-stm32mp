@@ -180,8 +180,7 @@ static struct sdw_intel_ctx
 	if (!res)
 		return NULL;
 
-	adev = acpi_fetch_acpi_dev(res->handle);
-	if (!adev)
+	if (acpi_bus_get_device(res->handle, &adev))
 		return NULL;
 
 	if (!res->count)
@@ -245,7 +244,7 @@ static struct sdw_intel_ctx
 			goto err;
 
 		link = &ldev->link_res;
-		link->cdns = auxiliary_get_drvdata(&ldev->auxdev);
+		link->cdns = dev_get_drvdata(&ldev->auxdev.dev);
 
 		if (!link->cdns) {
 			dev_err(&adev->dev, "failed to get link->cdns\n");
@@ -295,18 +294,18 @@ err:
 static int
 sdw_intel_startup_controller(struct sdw_intel_ctx *ctx)
 {
-	struct acpi_device *adev = acpi_fetch_acpi_dev(ctx->handle);
+	struct acpi_device *adev;
 	struct sdw_intel_link_dev *ldev;
 	u32 caps;
 	u32 link_mask;
 	int i;
 
-	if (!adev)
+	if (acpi_bus_get_device(ctx->handle, &adev))
 		return -EINVAL;
 
 	/* Check SNDWLCAP.LCOUNT */
 	caps = ioread32(ctx->mmio_base + ctx->shim_base + SDW_SHIM_LCAP);
-	caps &= SDW_SHIM_LCAP_LCOUNT_MASK;
+	caps &= GENMASK(2, 0);
 
 	/* Check HW supported vs property value */
 	if (caps < ctx->count) {

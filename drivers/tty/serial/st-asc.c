@@ -17,6 +17,7 @@
 #include <linux/tty_flip.h>
 #include <linux/delay.h>
 #include <linux/spinlock.h>
+#include <linux/pm_runtime.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/serial_core.h>
@@ -500,7 +501,7 @@ static void asc_pm(struct uart_port *port, unsigned int state,
 }
 
 static void asc_set_termios(struct uart_port *port, struct ktermios *termios,
-			    const struct ktermios *old)
+			    struct ktermios *old)
 {
 	struct asc_port *ascport = to_asc_port(port);
 	struct gpio_desc *gpiod;
@@ -857,7 +858,7 @@ static int asc_serial_resume(struct device *dev)
 /*----------------------------------------------------------------------*/
 
 #ifdef CONFIG_SERIAL_ST_ASC_CONSOLE
-static void asc_console_putchar(struct uart_port *port, unsigned char ch)
+static void asc_console_putchar(struct uart_port *port, int ch)
 {
 	unsigned int timeout = 1000000;
 

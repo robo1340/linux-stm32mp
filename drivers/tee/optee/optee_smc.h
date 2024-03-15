@@ -107,35 +107,18 @@ struct optee_smc_call_get_os_revision_result {
 /*
  * Call with struct optee_msg_arg as argument
  *
- * When called with OPTEE_SMC_CALL_WITH_RPC_ARG or
- * OPTEE_SMC_CALL_WITH_REGD_ARG in a0 there is one RPC struct optee_msg_arg
- * following after the first struct optee_msg_arg. The RPC struct
- * optee_msg_arg has reserved space for the number of RPC parameters as
- * returned by OPTEE_SMC_EXCHANGE_CAPABILITIES.
- *
- * When calling these functions, normal world has a few responsibilities:
+ * When calling this function normal world has a few responsibilities:
  * 1. It must be able to handle eventual RPCs
  * 2. Non-secure interrupts should not be masked
  * 3. If asynchronous notifications has been negotiated successfully, then
- *    the interrupt for asynchronous notifications should be unmasked
- *    during this call.
+ *    asynchronous notifications should be unmasked during this call.
  *
- * Call register usage, OPTEE_SMC_CALL_WITH_ARG and
- * OPTEE_SMC_CALL_WITH_RPC_ARG:
- * a0	SMC Function ID, OPTEE_SMC_CALL_WITH_ARG or OPTEE_SMC_CALL_WITH_RPC_ARG
+ * Call register usage:
+ * a0	SMC Function ID, OPTEE_SMC*CALL_WITH_ARG
  * a1	Upper 32 bits of a 64-bit physical pointer to a struct optee_msg_arg
  * a2	Lower 32 bits of a 64-bit physical pointer to a struct optee_msg_arg
  * a3	Cache settings, not used if physical pointer is in a predefined shared
  *	memory area else per OPTEE_SMC_SHM_*
- * a4-6	Not used
- * a7	Hypervisor Client ID register
- *
- * Call register usage, OPTEE_SMC_CALL_WITH_REGD_ARG:
- * a0	SMC Function ID, OPTEE_SMC_CALL_WITH_REGD_ARG
- * a1	Upper 32 bits of a 64-bit shared memory cookie
- * a2	Lower 32 bits of a 64-bit shared memory cookie
- * a3	Offset of the struct optee_msg_arg in the shared memory with the
- *	supplied cookie
  * a4-6	Not used
  * a7	Hypervisor Client ID register
  *
@@ -171,10 +154,6 @@ struct optee_smc_call_get_os_revision_result {
 #define OPTEE_SMC_FUNCID_CALL_WITH_ARG OPTEE_MSG_FUNCID_CALL_WITH_ARG
 #define OPTEE_SMC_CALL_WITH_ARG \
 	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_CALL_WITH_ARG)
-#define OPTEE_SMC_CALL_WITH_RPC_ARG \
-	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_CALL_WITH_RPC_ARG)
-#define OPTEE_SMC_CALL_WITH_REGD_ARG \
-	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_CALL_WITH_REGD_ARG)
 
 /*
  * Get Shared Memory Config
@@ -189,7 +168,7 @@ struct optee_smc_call_get_os_revision_result {
  * Have config return register usage:
  * a0	OPTEE_SMC_RETURN_OK
  * a1	Physical address of start of SHM
- * a2	Size of SHM
+ * a2	Size of of SHM
  * a3	Cache settings of memory, as defined by the
  *	OPTEE_SMC_SHM_* values above
  * a4-7	Preserved
@@ -223,11 +202,7 @@ struct optee_smc_get_shm_config_result {
  * a0	OPTEE_SMC_RETURN_OK
  * a1	bitfield of secure world capabilities OPTEE_SMC_SEC_CAP_*
  * a2	The maximum secure world notification number
- * a3	Bit[7:0]: Number of parameters needed for RPC to be supplied
- *		  as the second MSG arg struct for
- *		  OPTEE_SMC_CALL_WITH_ARG
- *	Bit[31:8]: Reserved (MBZ)
- * a4-7	Preserved
+ * a3-7	Preserved
  *
  * Error return register usage:
  * a0	OPTEE_SMC_RETURN_ENOTAVAIL, can't use the capabilities from normal world
@@ -252,8 +227,9 @@ struct optee_smc_get_shm_config_result {
 #define OPTEE_SMC_SEC_CAP_MEMREF_NULL		BIT(4)
 /* Secure world supports asynchronous notification of normal world */
 #define OPTEE_SMC_SEC_CAP_ASYNC_NOTIF		BIT(5)
-/* Secure world supports pre-allocating RPC arg struct */
-#define OPTEE_SMC_SEC_CAP_RPC_ARG		BIT(6)
+
+/* Secure world is built with OCALL support */
+#define OPTEE_SMC_SEC_CAP_OCALL			BIT(31)
 
 #define OPTEE_SMC_FUNCID_EXCHANGE_CAPABILITIES	9
 #define OPTEE_SMC_EXCHANGE_CAPABILITIES \
@@ -263,7 +239,7 @@ struct optee_smc_exchange_capabilities_result {
 	unsigned long status;
 	unsigned long capabilities;
 	unsigned long max_notif_value;
-	unsigned long data;
+	unsigned long reserved0;
 };
 
 /*
@@ -385,9 +361,6 @@ struct optee_smc_disable_shm_cache_result {
  * should be called until all pended values have been retrieved. When a
  * value is retrieved, it's cleared from the record in secure world.
  *
- * It is expected that this function is called from an interrupt handler
- * in normal world.
- *
  * Call requests usage:
  * a0	SMC Function ID, OPTEE_SMC_GET_ASYNC_NOTIF_VALUE
  * a1-6	Not used
@@ -428,19 +401,13 @@ struct optee_smc_disable_shm_cache_result {
 /*
  * Notification that OP-TEE generates and interruption.
  */
-#define OPTEE_SMC_FUNCID_GET_IT_NOTIF_VALUE	53		// Update will likely change to 20
+#define OPTEE_SMC_FUNCID_GET_IT_NOTIF_VALUE	53
 #define OPTEE_SMC_GET_IT_NOTIF_VALUE \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_GET_IT_NOTIF_VALUE)
 
-#define OPTEE_SMC_FUNCID_SET_IT_NOTIF_MASK	54		// Update will likely change to 21
+#define OPTEE_SMC_FUNCID_SET_IT_NOTIF_MASK	54
 #define OPTEE_SMC_SET_IT_NOTIF_MASK \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_SET_IT_NOTIF_MASK)
-
-/* See OPTEE_SMC_CALL_WITH_RPC_ARG above */
-#define OPTEE_SMC_FUNCID_CALL_WITH_RPC_ARG	18
-
-/* See OPTEE_SMC_CALL_WITH_REGD_ARG above */
-#define OPTEE_SMC_FUNCID_CALL_WITH_REGD_ARG	19
 
 /*
  * Resume from RPC (for example after processing a foreign interrupt)
@@ -570,29 +537,6 @@ struct optee_smc_disable_shm_cache_result {
 #define OPTEE_SMC_RPC_FUNC_CMD		5
 #define OPTEE_SMC_RETURN_RPC_CMD \
 	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_CMD)
-
-/*
- * Do an OCall RPC request to caller client. The Ocall request ABI is very
- * minimal: 2 input arguments and 2 output arguments. 1st output argument
- * value 0 is reserved to error management requesting OCall termination.
- * When 1st output argument is 0, 2nd output argument is either 0 or can
- * carry a TEEC_Result like error code.
- *
- * "Call" register usage:
- * a0	OPTEE_SMC_RETURN_RPC_OCALL2
- * a1	OCall input argument 1 (32 bit)
- * a2	OCall input argument 2 (32 bit)
- * a3-7	Resume information, must be preserved
- *
- * "Return" register usage:
- * a0	SMC Function ID, OPTEE_SMC_CALL_RETURN_FROM_RPC.
- * a1	OCall output argument 1 (32 bit), value 0 upon error
- * a2	OCall output argument 2 (32 bit), TEEC_Result error if @a1 is 0
- * a3-7	Preserved
- */
-#define OPTEE_SMC_RPC_FUNC_OCALL2		2048
-#define OPTEE_SMC_RETURN_RPC_OCALL2 \
-	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_OCALL2)
 
 /* Returned in a0 */
 #define OPTEE_SMC_RETURN_UNKNOWN_FUNCTION 0xFFFFFFFF

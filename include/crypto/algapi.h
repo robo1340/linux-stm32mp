@@ -7,13 +7,9 @@
 #ifndef _CRYPTO_ALGAPI_H
 #define _CRYPTO_ALGAPI_H
 
-#include <linux/align.h>
 #include <linux/crypto.h>
-#include <linux/kconfig.h>
 #include <linux/list.h>
-#include <linux/types.h>
-
-#include <asm/unaligned.h>
+#include <linux/kernel.h>
 
 /*
  * Maximum values for blocksize and alignmask, used to allocate
@@ -28,7 +24,6 @@
 struct crypto_aead;
 struct crypto_instance;
 struct module;
-struct notifier_block;
 struct rtattr;
 struct seq_file;
 struct sk_buff;
@@ -156,11 +151,9 @@ static inline void crypto_xor(u8 *dst, const u8 *src, unsigned int size)
 	    (size % sizeof(unsigned long)) == 0) {
 		unsigned long *d = (unsigned long *)dst;
 		unsigned long *s = (unsigned long *)src;
-		unsigned long l;
 
 		while (size > 0) {
-			l = get_unaligned(d) ^ get_unaligned(s++);
-			put_unaligned(l, d++);
+			*d++ ^= *s++;
 			size -= sizeof(unsigned long);
 		}
 	} else {
@@ -177,11 +170,9 @@ static inline void crypto_xor_cpy(u8 *dst, const u8 *src1, const u8 *src2,
 		unsigned long *d = (unsigned long *)dst;
 		unsigned long *s1 = (unsigned long *)src1;
 		unsigned long *s2 = (unsigned long *)src2;
-		unsigned long l;
 
 		while (size > 0) {
-			l = get_unaligned(s1++) ^ get_unaligned(s2++);
-			put_unaligned(l, d++);
+			*d++ = *s1++ ^ *s2++;
 			size -= sizeof(unsigned long);
 		}
 	} else {

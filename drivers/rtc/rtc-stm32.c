@@ -136,9 +136,9 @@ struct stm32_rtc_data {
 	void (*clear_events)(struct stm32_rtc *rtc, unsigned int flags);
 	bool has_pclk;
 	bool need_dbp;
-	bool need_accuracy;
 	bool has_lsco;
 	bool has_alarm_out;
+	bool need_accuracy;
 };
 
 struct stm32_rtc {
@@ -718,9 +718,9 @@ static void stm32_rtc_clear_events(struct stm32_rtc *rtc,
 static const struct stm32_rtc_data stm32_rtc_data = {
 	.has_pclk = false,
 	.need_dbp = true,
-	.need_accuracy = false,
 	.has_lsco = false,
 	.has_alarm_out = false,
+	.need_accuracy = false,
 	.regs = {
 		.tr = 0x00,
 		.dr = 0x04,
@@ -743,9 +743,9 @@ static const struct stm32_rtc_data stm32_rtc_data = {
 static const struct stm32_rtc_data stm32h7_rtc_data = {
 	.has_pclk = true,
 	.need_dbp = true,
-	.need_accuracy = false,
 	.has_lsco = false,
 	.has_alarm_out = false,
+	.need_accuracy = false,
 	.regs = {
 		.tr = 0x00,
 		.dr = 0x04,
@@ -777,9 +777,9 @@ static void stm32mp1_rtc_clear_events(struct stm32_rtc *rtc,
 static const struct stm32_rtc_data stm32mp1_data = {
 	.has_pclk = true,
 	.need_dbp = false,
-	.need_accuracy = true,
 	.has_lsco = true,
 	.has_alarm_out = true,
+	.need_accuracy = true,
 	.regs = {
 		.tr = 0x00,
 		.dr = 0x04,
@@ -940,13 +940,18 @@ static int stm32_rtc_probe(struct platform_device *pdev)
 		rtc->rtc_ck = devm_clk_get(&pdev->dev, NULL);
 	} else {
 		rtc->pclk = devm_clk_get(&pdev->dev, "pclk");
-		if (IS_ERR(rtc->pclk))
-			return dev_err_probe(&pdev->dev, PTR_ERR(rtc->pclk), "no pclk clock");
-
+		if (IS_ERR(rtc->pclk)) {
+			if (PTR_ERR(rtc->pclk) != -EPROBE_DEFER)
+				dev_err(&pdev->dev, "no pclk clock");
+			return PTR_ERR(rtc->pclk);
+		}
 		rtc->rtc_ck = devm_clk_get(&pdev->dev, "rtc_ck");
 	}
-	if (IS_ERR(rtc->rtc_ck))
-		return dev_err_probe(&pdev->dev, PTR_ERR(rtc->rtc_ck), "no rtc_ck clock");
+	if (IS_ERR(rtc->rtc_ck)) {
+		if (PTR_ERR(rtc->rtc_ck) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "no rtc_ck clock");
+		return PTR_ERR(rtc->rtc_ck);
+	}
 
 	if (rtc->data->has_pclk) {
 		ret = clk_prepare_enable(rtc->pclk);

@@ -124,6 +124,9 @@ static const struct attribute_group *iio_sysfs_trigger_attr_groups[] = {
 	NULL
 };
 
+static const struct iio_trigger_ops iio_sysfs_trigger_ops = {
+};
+
 static int iio_sysfs_trigger_probe(int id)
 {
 	struct iio_sysfs_trig *t;
@@ -153,6 +156,7 @@ static int iio_sysfs_trigger_probe(int id)
 	}
 
 	t->trig->dev.groups = iio_sysfs_trigger_attr_groups;
+	t->trig->ops = &iio_sysfs_trigger_ops;
 	iio_trigger_set_drvdata(t->trig, t);
 
 	t->work = IRQ_WORK_INIT_HARD(iio_sysfs_trigger_work);
@@ -176,15 +180,16 @@ out1:
 
 static int iio_sysfs_trigger_remove(int id)
 {
-	struct iio_sysfs_trig *t = NULL, *iter;
+	bool foundit = false;
+	struct iio_sysfs_trig *t;
 
 	mutex_lock(&iio_sysfs_trig_list_mut);
-	list_for_each_entry(iter, &iio_sysfs_trig_list, l)
-		if (id == iter->id) {
-			t = iter;
+	list_for_each_entry(t, &iio_sysfs_trig_list, l)
+		if (id == t->id) {
+			foundit = true;
 			break;
 		}
-	if (!t) {
+	if (!foundit) {
 		mutex_unlock(&iio_sysfs_trig_list_mut);
 		return -EINVAL;
 	}
@@ -203,13 +208,9 @@ static int iio_sysfs_trigger_remove(int id)
 
 static int __init iio_sysfs_trig_init(void)
 {
-	int ret;
 	device_initialize(&iio_sysfs_trig_dev);
 	dev_set_name(&iio_sysfs_trig_dev, "iio_sysfs_trigger");
-	ret = device_add(&iio_sysfs_trig_dev);
-	if (ret)
-		put_device(&iio_sysfs_trig_dev);
-	return ret;
+	return device_add(&iio_sysfs_trig_dev);
 }
 module_init(iio_sysfs_trig_init);
 

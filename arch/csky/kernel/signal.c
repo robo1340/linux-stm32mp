@@ -3,7 +3,7 @@
 #include <linux/signal.h>
 #include <linux/uaccess.h>
 #include <linux/syscalls.h>
-#include <linux/resume_user_mode.h>
+#include <linux/tracehook.h>
 
 #include <asm/traps.h>
 #include <asm/ucontext.h>
@@ -265,5 +265,5 @@ asmlinkage void do_notify_resume(struct pt_regs *regs,
 		do_signal(regs);
 
 	if (thread_info_flags & _TIF_NOTIFY_RESUME)
-		resume_user_mode_work(regs);
+		tracehook_notify_resume(regs);
 }

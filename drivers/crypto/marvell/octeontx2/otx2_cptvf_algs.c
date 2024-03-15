@@ -896,6 +896,7 @@ static int otx2_cpt_aead_cbc_aes_sha_setkey(struct crypto_aead *cipher,
 	struct crypto_authenc_key_param *param;
 	int enckeylen = 0, authkeylen = 0;
 	struct rtattr *rta = (void *)key;
+	int status;
 
 	if (!RTA_OK(rta, keylen))
 		return -EINVAL;
@@ -937,7 +938,11 @@ static int otx2_cpt_aead_cbc_aes_sha_setkey(struct crypto_aead *cipher,
 	ctx->enc_key_len = enckeylen;
 	ctx->auth_key_len = authkeylen;
 
-	return aead_hmac_init(cipher);
+	status = aead_hmac_init(cipher);
+	if (status)
+		return status;
+
+	return 0;
 }
 
 static int otx2_cpt_aead_ecb_null_sha_setkey(struct crypto_aead *cipher,
@@ -1674,8 +1679,11 @@ static void swap_func(void *lptr, void *rptr, int size)
 {
 	struct cpt_device_desc *ldesc = lptr;
 	struct cpt_device_desc *rdesc = rptr;
+	struct cpt_device_desc desc;
 
-	swap(*ldesc, *rdesc);
+	desc = *ldesc;
+	*ldesc = *rdesc;
+	*rdesc = desc;
 }
 
 int otx2_cpt_crypto_init(struct pci_dev *pdev, struct module *mod,
