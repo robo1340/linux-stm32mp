@@ -450,8 +450,7 @@
 	pinctrl-1 = <&spi5_sleep_pins_a>;
 	status = "okay";
 
-	cs-gpios = <&gpioh 11 GPIO_ACTIVE_LOW>, /* GPIOH_11 */
-		<&gpioe 10 GPIO_ACTIVE_LOW>; /* GPIOE_10 */
+	cs-gpios = <&gpioh 11 GPIO_ACTIVE_LOW>; // GPIOH_11 
 
 	spidev@0{
 		compatible = "rohm,dh2228fv";
@@ -465,6 +464,7 @@
 	//	spi-max-frequency = <4000000>;
 	//};
 };
+
 
 &sram {
 	dma_pool: dma-sram@0 {
